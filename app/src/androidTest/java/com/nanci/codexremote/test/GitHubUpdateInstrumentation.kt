@@ -200,7 +200,7 @@ class GitHubUpdateInstrumentation : Instrumentation() {
 
     private fun <T> expectFailure(future: CompletableFuture<T>, code: String): Throwable {
         try { future.get(30, TimeUnit.SECONDS) }
-        catch (failure: ExecutionException) { return generateSequence(failure) { it.cause }.last() }
+        catch (failure: ExecutionException) { return generateSequence<Throwable>(failure) { it.cause }.last() }
         catch (failure: CancellationException) { return failure }
         throw CheckFailure(code)
     }
