@@ -2,7 +2,7 @@
 
 原生 Kotlin / Jetpack Compose 手机客户端。通过带 SHA-256 主机指纹校验的 SSH 连接服务器上的 `codex app-server daemon` / `proxy`，复用服务器的模型提供方、URL、API Key 与聊天历史。手机中不包含模型提供方的 Key，也不需要 ChatGPT App 登录。
 
-当前已验证版本为 **0.2.9**。源码已同步 GitHub；推送版本标签会由 [GitHub Actions](https://github.com/jinshenganyuci/codex-cli-app/actions) 自动构建并发布到 [Releases](https://github.com/jinshenganyuci/codex-cli-app/releases)。0.2.9 同时保留现有服务器在线更新通道和 Debian 验证产物。恢复方式见 [备份与恢复](docs/BACKUP.md)，参考资料位置见 [界面参考说明](docs/APK_REFERENCE.md)。
+私有通道已验证版本为 **0.2.9**；公开版 **0.2.10** 使用 GitHub Releases 更新。源码已同步 GitHub；每小时检查主分支的新版本，并由 [GitHub Actions](https://github.com/jinshenganyuci/codex-cli-app/actions) 自动构建并发布到 [Releases](https://github.com/jinshenganyuci/codex-cli-app/releases)。0.2.9 同时保留现有服务器在线更新通道和 Debian 验证产物。恢复方式见 [备份与恢复](docs/BACKUP.md)，参考资料位置见 [界面参考说明](docs/APK_REFERENCE.md)。
 
 ## 使用
 
@@ -57,7 +57,7 @@ Markdown 为本地原生解析的常用子集；差异视图支持文件分组�
 
 `app/src/debug` 中的组件预览、输入法/滚动检查、实际图片检查与一次性私有目录凭据导入 Activity 仅供开发测试，Release 不包含这些 Activity。图片检查的原始素材由测试时写入应用私有目录，不打包进 APK。正常用户通过设置页导入连接，不依赖 Debug 入口。
 
-真实升级测试可在 Debian 以 `CODEX_MOBILE_TEST_BASE=1` 构建 Debug variant，其实际安装版本号为 7、名称为 `0.2.5-update-test`；普通 Release 使用生产版本号 12（0.2.9）。首装激活验证使用独立测试邀请和 `CODEX_MOBILE_BOOTSTRAP_TEST_BASE=1`，生成 code10 的 `0.2.8-invite-test` Release 基包，避免为测试降级已有手机。两类测试包均严禁发布。更新判断使用 PackageManager 的实际安装版本，不依赖测试 variant 的 BuildConfig 常量。
+真实升级测试可在 Debian 以 `CODEX_MOBILE_TEST_BASE=1` 构建 Debug variant，其实际安装版本号为 7、名称为 `0.2.5-update-test`；当前源码默认 Release 使用版本号 13（0.2.10）。首装激活验证使用独立测试邀请和 `CODEX_MOBILE_BOOTSTRAP_TEST_BASE=1`，生成 code10 的 `0.2.8-invite-test` Release 基包，避免为测试降级已有手机。两类测试包均严禁发布。更新判断使用 PackageManager 的实际安装版本，不依赖测试 variant 的 BuildConfig 常量。
 
 正式发布在 Debian 使用 `scripts/publish-release.py --help` 所列参数，提供已验证的正式 APK、上一正式版作为签名基线、可信 SSH 主机密钥文件以及版本说明。工具先校验包身份、签名和版本，拒绝可调试/测试包，再上传并校验，最后原子更新版本索引。认证通过任务专用 SSH agent 转发，不复制或长期保存私钥。仅在用户要求交付正式更新时执行发布。
 
@@ -68,3 +68,5 @@ Markdown 为本地原生解析的常用子集；差异视图支持文件分组�
 0.2.7 完整构建、协议及真机记录归档在 Debian 的 `codex-mobile/20261116-android-v02` 产物目录；0.2.8 的首装和更新验证归档在 `codex-mobile/20261116-share-install`；0.2.9 文件下载验证归档在 `codex-mobile/20261116-file-download`。Debug 组件预览用于固定 UI 状态检查；它不是服务器审批成功的证据。真实服务器协议检查与 USB 手机交互检查分别记录。
 
 GitHub 自动构建的签名配置、标签规则与发布步骤见 [GitHub 自动发布](docs/GITHUB_RELEASE.md)。
+
+公开 APK 在未添加 SSH 连接时也能从 GitHub Releases 检查更新，不使用私人服务器。默认 Debian 私有包仍走原 SSH/SFTP 更新通道。GitHub 每小时第 17 分检查 `main`；已发布版本跳过，新的 `versionName` 和递增 `versionCode` 才触发构建发布。

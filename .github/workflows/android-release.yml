@@ -3,23 +3,55 @@ name: Android build and release
 on:
   push:
     tags: ['v*']
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: android-release
   cancel-in-progress: false
 
 jobs:
-  build:
+  prepare:
     if: github.repository == 'jinshenganyuci/codex-cli-app' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      publish: ${{ steps.select.outputs.publish }}
+      tag: ${{ steps.select.outputs.tag }}
+      source_sha: ${{ steps.select.outputs.source_sha }}
+      version_code: ${{ steps.select.outputs.version_code }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'main' }}
+          persist-credentials: false
+      - name: Check for a new release version
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/prepare-ci-release.py
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+      RELEASE_VERSION_CODE: ${{ needs.prepare.outputs.version_code }}
+      CODEX_MOBILE_PUBLIC_RELEASE: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
           persist-credentials: false
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -53,8 +85,8 @@ jobs:
           retention-days: 7
 
   release:
-    needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -68,15 +100,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check SHA256SUMS)
           python3 - <<'PY'
-          import json, os, pathlib
+          import json, os, pathlib, subprocess
           m = json.loads(pathlib.Path('dist/release-metadata.json').read_text())
           assert os.environ['RELEASE_TAG'] == 'v' + m['versionName']
+          base = 'repos/' + os.environ['GH_REPO']
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', base + path]))
+          obj = api('/git/ref/tags/' + os.environ['RELEASE_TAG'])['object']
+          for _ in range(8):
+              if obj['type'] != 'tag': break
+              obj = api('/git/tags/' + obj['sha'])['object']
+          assert obj['type'] == 'commit' and obj['sha'] == m['sourceCommit'], 'Release tag moved after build'
+          assert m['schemaVersion'] == 1 and m['updateChannel'] == 'github'
           pathlib.Path('release-notes.txt').write_text(
               '由 GitHub Actions 从此版本标签构建，沿用正式签名，可覆盖安装。\n\n'
               '版本：' + m['versionName'] + '（code ' + str(m['versionCode']) + '）\n'

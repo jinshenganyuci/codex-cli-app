@@ -1,17 +1,19 @@
-# GitHub 自动构建与发布
+# GitHub 自动构建、发布与公开版更新
 
-工作流：`.github/workflows/android-release.yml`（Android build and release）。
+工作流：`.github/workflows/android-release.yml`（Android build and release）。每小时第 17 分钟检查 `main`（UTC 表达式 `17 * * * *`，避开整点；GitHub 调度可能延迟）。发现新的版本号后自动创建/核对版本标签、构建并发布。版本已存在于公开 Release 时，只完成检查，跳过 Android 环境、构建和发布，不会重复发同一版本。
 
-推送 `v0.2.9` 这类版本标签后，GitHub 的 Ubuntu 24.04 runner 使用 Java 21、Android SDK 35 和 Gradle 缓存构建正式 APK、运行 Android lint，并验证包名、原有签名、版本号与标签、非 Debug/测试包及不含专用邀请。成功后才发布 GitHub Release，附带 APK、SHA256SUMS 和签名/源码提交等公开元数据。先创建草稿，附件全部上传后公开；已公开的 Release 不会被重跑覆盖。
+后续发布只需：
 
-后续发布步骤：
+1. 修改 `app/build.gradle.kts` 的 `versionName`，递增 `versionCode` 并完成必要的功能验证。
+2. 将源码提交同步到 Debian，再由 Debian 推送 `main`。下一次小时检查自动处理新版本。
+3. 要立即处理，可在 Actions 中对 `main` 点 **Run workflow**。手推 `v0.2.10` 这样的标签仍可立即触发同一流程。
 
-1. 修改 `app/build.gradle.kts` 的 `versionName` 并递增 `versionCode`，完成所需真机验证。
-2. 将源码提交同步至 Debian，由 Debian 推送主分支和匹配的版本标签，例如 `v0.2.10`。
-3. 在仓库 Actions 中查看运行结果；通过后可在 Releases 下载。手动 Run workflow 仅允许主分支构建验证，保留 7 天 Actions artifact，不发布 Release。
+准备阶段固定本次读取到的源码提交。新标签必须精确指向该提交；旧标签指向不同提交时会停止，不覆盖标签。`versionCode` 必须大于所有已公开版本；重新发布应继续提升版本号。通过 GitHub Token 创建标签后，同一次运行直接执行构建，不依赖标签事件再次触发。整个工作流使用一个并发组，定时检查、手动检查和标签事件不会同时发布。
 
-仓库需要两个 Actions secrets：`ANDROID_KEYSTORE_BASE64`（现有正式 PKCS#12 的标准 Base64）和 `ANDROID_KEYSTORE_PASSWORD`。签名别名为 `codex-mobile`。工作流把签名文件写入 runner 临时目录，构建后和失败时清理；不会放入源码、Gradle 缓存或附件。修改签名必须视作迁移，不能替换成临时签名，否则无法覆盖安装已有 App。
+GitHub Ubuntu 24.04 runner 使用 Java 21、Android SDK 35 和 Gradle 缓存，以 `CODEX_MOBILE_PUBLIC_RELEASE=1` 构建正式 APK、运行 Android lint，并验证包名、原有签名、版本号与标签、源码提交、公开更新通道标记及不含专用邀请/Debug/测试入口。成功后先创建草稿，APK、SHA256SUMS、release-metadata.json 全部上传后才公开。已公开 Release 不会被重跑覆盖；尚未完成的同源码草稿允许重试。构建失败可修复源码后递增版本，或在源码未变时重跑。
 
-0.2.9 从源码在 GitHub 重新构建，APK 字节校验值可能与 Debian 交付包不同；同包名、同版本号、同签名。现有 App 的 SSH/SFTP 在线更新通道仍使用 `scripts/publish-release.py` 从 Debian 验证后发布，本工作流不持有服务器 SSH 凭据，也不自动覆盖该更新索引。GitHub CI 构建与静态检查不替代真机功能验证。
+公开 APK 从 GitHub Releases 检查和下载更新，无需连接 SSH 服务器。元数据包含 `schemaVersion: 1`、`updateChannel: github`、版本、最低 Android API、SHA-256、大小、签名摘要、源码提交和更新说明；实际下载 URL 来自对应 Release 的附件。0.2.9 历史 Release 保留，不回写。默认私有构建仍走现有 SSH/SFTP 更新通道，由 Debian 的 `scripts/publish-release.py` 验证发布；GitHub 工作流不持有服务器 SSH 凭据，也不修改该索引。
 
-Actions 固定使用已核对的上游 commit SHA。配置参考：[GitHub Actions 发布权限](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)、[Gradle setup-gradle](https://github.com/gradle/actions/blob/main/setup-gradle/README.md)。
+仓库 Actions secrets 为 `ANDROID_KEYSTORE_BASE64`（现有正式 PKCS#12 的标准 Base64）和 `ANDROID_KEYSTORE_PASSWORD`，签名别名 `codex-mobile`。签名文件只写入 runner 临时目录，成功/失败均清理，不进入源码、Gradle缓存或附件。Actions artifact 保留 7 天；GitHub Release 附件持续保留。
+
+CI 构建与静态检查不替代真机功能验证。Actions 固定使用上游 commit SHA。参考：[GitHub 定时工作流](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)、[工作流权限](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)。

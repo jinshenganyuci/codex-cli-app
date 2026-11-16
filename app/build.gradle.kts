@@ -62,8 +62,11 @@ android {
         applicationId = "com.nanci.codexremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.2.9"
+        versionCode = 13
+        versionName = "0.2.10"
+        val publicRelease = providers.environmentVariable("CODEX_MOBILE_PUBLIC_RELEASE").orNull == "1"
+        buildConfigField("boolean", "PUBLIC_RELEASE", publicRelease.toString())
+        resValue("string", "public_update_channel", if (publicRelease) "github" else "ssh")
         testInstrumentationRunner = providers.gradleProperty("codexTestRunner")
             .orElse("com.nanci.codexremote.test.ShareInstallInstrumentation").get()
     }

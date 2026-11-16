@@ -10,6 +10,7 @@ import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import com.jcraft.jsch.SftpException
 import com.jcraft.jsch.UserInfo
+import com.nanci.codexremote.BuildConfig
 import com.nanci.codexremote.core.ConnectionProfile
 import com.nanci.codexremote.core.SshCredential
 import java.io.ByteArrayOutputStream
@@ -28,25 +29,42 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** Independent SFTP updater. Never starts Codex or touches its running SSH/App Server connection. */
+/** Independent updater; the public build uses only GitHub HTTPS, the private build uses SFTP. */
 class UpdateRepository internal constructor(
     private val cacheDirectory: File,
     private val verifier: UpdateApkVerifier,
     private val dispatch: (() -> Unit) -> Unit,
     private val sourceFactory: () -> UpdateSource = { SftpUpdateSource() },
+    private val publicRelease: Boolean = false,
 ) : AutoCloseable {
     constructor(context: Context) : this(File(context.applicationContext.cacheDir, "updates"),
-        AndroidApkVerifier(context), { action -> Handler(Looper.getMainLooper()).post(action) })
+        AndroidApkVerifier(context), { action -> Handler(Looper.getMainLooper()).post(action) },
+        { if (BuildConfig.PUBLIC_RELEASE) GitHubUpdateSource() else SftpUpdateSource() }, BuildConfig.PUBLIC_RELEASE)
 
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "codex-update").apply { isDaemon = true } }
     private val timer = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "codex-update-timeout").apply { isDaemon = true } }
     private val active = AtomicReference<Operation<*>?>()
     private val closed = AtomicBoolean(false)
 
+    /** Public updates work before any SSH connection exists and never load its credentials. */
+    fun checkPublic(): CompletableFuture<UpdateCheck> =
+        if (publicRelease) check(GitHubUpdateSource.PROFILE, SshCredential())
+        else publicChannelDisabled()
+
+    fun downloadPublic(release: UpdateRelease,
+        onProgress: (UpdateProgress) -> Unit = {}): CompletableFuture<VerifiedApk> =
+        if (publicRelease) download(release, SshCredential(), onProgress)
+        else publicChannelDisabled()
+
+    private fun <T> publicChannelDisabled(): CompletableFuture<T> = CompletableFuture<T>().also {
+        it.completeExceptionally(UpdateException("此安装包未启用 GitHub 更新"))
+    }
+
     fun check(profile: ConnectionProfile, credential: SshCredential): CompletableFuture<UpdateCheck> =
-        start(credential, 45_000) { operation ->
-            val source = connect(operation, profile)
-            val release = UpdateManifest.parse(source.metadata(), profile)
+        start(if (publicRelease) SshCredential() else credential, 45_000) { operation ->
+            val origin = if (publicRelease) GitHubUpdateSource.PROFILE else profile
+            val source = connect(operation, origin)
+            val release = UpdateManifest.parse(source.metadata(), origin)
             operation.ensureActive()
             val installed = verifier.installed()
             if (installed.packageName != UpdateManifest.PACKAGE_NAME) throw UpdateException("当前应用包名无法匹配更新")
@@ -55,12 +73,14 @@ class UpdateRepository internal constructor(
         }
 
     fun download(release: UpdateRelease, credential: SshCredential,
-        onProgress: (UpdateProgress) -> Unit = {}): CompletableFuture<VerifiedApk> = start(credential, 10 * 60_000) { operation ->
+        onProgress: (UpdateProgress) -> Unit = {}): CompletableFuture<VerifiedApk> = start(if (publicRelease) SshCredential() else credential, 10 * 60_000) { operation ->
+        if (publicRelease && release.source != GitHubUpdateSource.PROFILE)
+            throw UpdateException("更新来源与此公开安装包不匹配")
         UpdateManifest.validate(release)
         if (release.versionCode.toLong() <= verifier.installed().versionCode) throw UpdateException("不能下载相同版本或降级版本")
         if (release.minSdk > verifier.deviceSdk) throw UpdateException("此更新需要更高版本的 Android 系统")
         val source = connect(operation, release.source)
-        // Bind the offer to the same manifest and SSH origin, including after a delayed install prompt.
+        // Bind the offer to the same manifest and immutable origin, including after a delayed install prompt.
         val current = UpdateManifest.parse(source.metadata(), release.source)
         if (current != release) throw UpdateException("服务器的更新版本已变化，请重新检查更新")
         if (!cacheDirectory.isDirectory && !cacheDirectory.mkdirs()) throw UpdateException("无法创建更新下载目录")

@@ -6,6 +6,8 @@ umask 077
 [[ "${GITHUB_ACTIONS:-}" == true && -n "${RUNNER_TEMP:-}" ]] || { echo 'Run this entrypoint in GitHub Actions.' >&2; exit 2; }
 [[ -n "${ANDROID_KEYSTORE_BASE64:-}" && -n "${ANDROID_KEYSTORE_PASSWORD:-}" ]] || { echo 'Configure the two Android signing repository secrets.' >&2; exit 2; }
 [[ -z "${CODEX_MOBILE_BOOTSTRAP_FILE:-}${CODEX_MOBILE_BOOTSTRAP_TEST_BASE:-}${CODEX_MOBILE_TEST_BASE:-}" ]] || { echo 'Private invitation and test builds cannot be published.' >&2; exit 2; }
+[[ "${CODEX_MOBILE_PUBLIC_RELEASE:-}" == 1 ]] || { echo 'GitHub builds require the public update channel.' >&2; exit 2; }
+[[ -n "${RELEASE_TAG:-}" && -n "${RELEASE_SOURCE_SHA:-}" ]] || { echo 'Missing selected release revision.' >&2; exit 2; }
 SIGNING_DIRECTORY="$RUNNER_TEMP/codex-android-signing"
 [[ ! -e "$SIGNING_DIRECTORY" ]] || { echo 'Signing temporary directory already exists.' >&2; exit 2; }
 mkdir -m 700 "$SIGNING_DIRECTORY"

@@ -27,10 +27,16 @@ signers = re.findall(r'certificate SHA-256 digest: ([a-f0-9]+)', cert)
 assert signers == [SIGNER], 'APK does not use the established release signing certificate'
 with zipfile.ZipFile(apk) as archive:
     assert not any(n.endswith('/codex-bootstrap.json') for n in archive.namelist()), 'Private invitation is not publishable'
-if os.environ.get('GITHUB_REF_TYPE') == 'tag':
-    assert os.environ['GITHUB_REF_NAME'] == 'v' + version, 'Tag does not match APK version'
-else:
-    assert os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch', 'Unexpected CI trigger'
+assert os.environ.get('RELEASE_TAG') == 'v' + version, 'Tag does not match APK version'
+source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+assert source_commit == os.environ.get('RELEASE_SOURCE_SHA'), 'Source changed after release selection'
+assert code == int(os.environ['RELEASE_VERSION_CODE']), 'APK code differs from selected release'
+assert os.environ.get('CODEX_MOBILE_PUBLIC_RELEASE') == '1', 'Public release flag is missing'
+resources = subprocess.check_output([str(sdk / 'aapt'), 'dump', '--values', 'resources', str(apk)], text=True)
+channels = re.findall(r'^\s*resource 0x[0-9a-f]+ com\.nanci\.codexremote:string/public_update_channel:[^\n]*\n\s+\(string(?:8|16)\) "([^"]*)"', resources, re.M)
+assert channels and set(channels) == {'github'}, 'APK does not declare the GitHub update channel'
+minimum = re.search(r"sdkVersion:'(\d+)'", badging)
+assert minimum and int(minimum[1]) >= 26, 'Invalid minimum SDK'
 size = apk.stat().st_size
 assert 0 < size < 100 * 1024 * 1024, 'Unexpected APK size'
 digest = hashlib.sha256(apk.read_bytes()).hexdigest()
@@ -40,7 +46,10 @@ assert not any(output.iterdir()), 'Refusing to mix release artifacts'
 name = f'Codex-{version}.apk'
 shutil.copyfile(apk, output / name)
 (output / 'SHA256SUMS').write_text(f'{digest}  {name}\n')
-metadata = dict(packageName=package[1], versionCode=code, versionName=version,
-                signerSha256=SIGNER, sha256=digest, sizeBytes=size, sourceCommit=os.environ['GITHUB_SHA'])
+metadata = dict(schemaVersion=1, packageName=package[1], versionCode=code, versionName=version,
+                minSdk=int(minimum[1]), signerSha256=SIGNER, sha256=digest, sizeBytes=size,
+                sourceCommit=source_commit, apkFile='releases/' + name, updateChannel='github',
+                releaseNotes=['公开版通过 GitHub Releases 检查和下载更新，无需连接 SSH 服务器。',
+                              '此安装包由 GitHub Actions 从版本标签构建，沿用正式签名。'])
 (output / 'release-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
 print(f'Verified {name}: code {code}, established signer, no private invitation, SHA-256 {digest}')

@@ -8,9 +8,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import com.nanci.codexremote.BuildConfig
 import com.nanci.codexremote.connection.ConnectionStore
 import com.nanci.codexremote.connection.SavedConnection
 import com.nanci.codexremote.core.SshCredential
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 
 enum class UpdatePhase { Hidden, Available, Downloading, Ready, DownloadError, PermissionSettings, Installer }
@@ -37,7 +39,9 @@ sealed interface UpdateInstallAction {
 class UpdateCoordinator(application: Application) : AndroidViewModel(application) {
     private val main = Handler(Looper.getMainLooper())
     private val credentialsIO = Executors.newSingleThreadExecutor()
-    private val store = ConnectionStore(application)
+    // Public builds check GitHub independently of chat connections and never load SSH credentials.
+    private val publicRelease = BuildConfig.PUBLIC_RELEASE
+    private val store by lazy { ConnectionStore(application) }
     private val repository = UpdateRepository(application)
     private var active: SavedConnection? = null
     private var origin: SavedConnection? = null
@@ -90,6 +94,7 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
 
     fun onConnectionAvailable(saved: SavedConnection?) {
         if (closed) return
+        if (publicRelease) { checkIfNeeded(); return }
         val changed = identity(active) != identity(saved)
         active = saved
         if (changed && origin != null && identity(origin) != identity(saved)) {
@@ -102,14 +107,15 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
 
     private fun checkIfNeeded() {
         if (closed || !foreground || !sessionOpen || checked || checking || externalActive || externalReturnPending) return
-        val saved = active?.takeIf { it.hasCredential } ?: return
+        val saved = if (publicRelease) null else active?.takeIf { it.hasCredential }
+        if (!publicRelease && saved == null) return
         if (state.phase != UpdatePhase.Hidden) return
         checked = true; checking = true; automaticCheckCount++; lastAutomaticCheckStatus = "checking"
         val expectedSession = session
         val token = ++operation
         origin = saved
-        withCredential(saved, token, automatic = true) { secret ->
-            repository.check(saved.profile, secret).whenComplete { result, failure ->
+        fun receive(request: CompletableFuture<UpdateCheck>) {
+            request.whenComplete { result, failure ->
                 if (!current(token, saved)) return@whenComplete
                 checking = false
                 if (failure == null && result.available && sessionOpen && session == expectedSession) {
@@ -122,24 +128,34 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
                 }
             }
         }
+        if (publicRelease) receive(repository.checkPublic())
+        else withCredential(requireNotNull(saved), token, automatic = true) { secret ->
+            receive(repository.check(saved.profile, secret))
+        }
     }
 
     fun download() {
         if (closed || state.phase !in setOf(UpdatePhase.Available, UpdatePhase.DownloadError)) return
         val release = state.release ?: return
-        val saved = origin ?: return
-        if (identity(saved) != identity(active)) { dismiss(); return }
+        val saved = origin
+        if (!publicRelease && saved == null) return
+        if (!originMatches()) { dismiss(); return }
         val token = ++operation
         checking = false
         state = UpdateUiState(UpdatePhase.Downloading, release, UpdateProgress(0, release.sizeBytes))
-        withCredential(saved, token, automatic = false) { secret ->
-            repository.download(release, secret) { progress ->
-                if (current(token, saved) && state.phase == UpdatePhase.Downloading) state = state.copy(progress = progress)
-            }.whenComplete { apk, failure ->
+        val progress: (UpdateProgress) -> Unit = { value ->
+            if (current(token, saved) && state.phase == UpdatePhase.Downloading) state = state.copy(progress = value)
+        }
+        fun receive(request: CompletableFuture<VerifiedApk>) {
+            request.whenComplete { apk, failure ->
                 if (!current(token, saved)) return@whenComplete
                 state = if (failure == null) UpdateUiState(UpdatePhase.Ready, release, UpdateProgress(release.sizeBytes, release.sizeBytes), apk)
                 else UpdateUiState(UpdatePhase.DownloadError, release, message = safeFailure(failure))
             }
+        }
+        if (publicRelease) receive(repository.downloadPublic(release, progress))
+        else withCredential(requireNotNull(saved), token, automatic = false) { secret ->
+            receive(repository.download(release, secret, progress))
         }
     }
 
@@ -153,7 +169,7 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
     fun requestInstall(permissionGranted: Boolean): UpdateInstallAction? {
         if (closed || state.phase != UpdatePhase.Ready) return null
         val apk = state.apk ?: return null
-        if (identity(origin) != identity(active)) { dismiss(); return null }
+        if (!originMatches()) { dismiss(); return null }
         if (!apk.file.isFile || apk.file.length() != apk.release.sizeBytes) {
             state = UpdateUiState(UpdatePhase.DownloadError, apk.release, message = "已下载的更新包不可用，请重新下载。")
             return null
@@ -172,7 +188,7 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
     fun onPermissionReturned(permissionGranted: Boolean): UpdateInstallAction? {
         returnedExternal()
         if (closed || state.phase != UpdatePhase.PermissionSettings) return null
-        if (identity(origin) != identity(active)) { state = UpdateUiState(); origin = null; return null }
+        if (!originMatches()) { state = UpdateUiState(); origin = null; return null }
         state = state.copy(phase = UpdatePhase.Ready, message = if (permissionGranted) null else "尚未允许安装更新。需要时可再次点击“安装”。")
         return if (permissionGranted) requestInstall(true) else null
     }
@@ -231,7 +247,9 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun current(token: Long, saved: SavedConnection): Boolean = !closed && token == operation && identity(saved) == identity(active)
+    private fun current(token: Long, saved: SavedConnection?): Boolean = !closed && token == operation &&
+        (publicRelease || saved != null && identity(saved) == identity(active))
+    private fun originMatches(): Boolean = publicRelease || identity(origin) == identity(active)
     private fun identity(saved: SavedConnection?): String? = saved?.let {
         listOf(it.id, it.profile.host, it.profile.port.toString(), it.profile.user, it.profile.fingerprint, it.profile.hostKeyAlgorithm).joinToString("\u0000")
     }
