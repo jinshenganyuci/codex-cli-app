@@ -1,0 +1,44 @@
+Codex Android 0.2.9 — 文件下载适配验证（2026-11-16）
+
+范围与依据
+- 先核对 ChatGPT 1.2026.307 Android 原生 p2e1/lp0/e8m/gva 及保存/打开回调，再核对用户两段录屏。
+- 组件尺寸、原生vector、加载/失败/已加载状态、下载后关闭、已保存记录与ACTION_VIEW chooser有独立证据；主题RGBA、导航栏全部内部覆盖未完全确定，不宣称所有设备像素一致。
+- agents.me进一步明确：只有查不到对应原生实现或确认无法复用，说明原因后才考虑其他方式。
+
+构建及产物
+- Debian debian-build，任务 codex-mobile/20261116-file-download；源码由Mac编辑、按90文件manifest逐个SHA核对后构建。
+- build-01：Release及androidTest编译通过；lint发现原有windowLightNavigationBar在minSdk26使用API27属性。将其移入values-v27后重建。
+- build-02：assembleRelease、assembleReleaseAndroidTest、lintRelease通过，86.903秒；现有依赖升级提示、弃用与样式警告保留，不将它们冒充错误清零。
+- 包名com.nanci.codexremote；versionName0.2.9，versionCode12，minSdk26；原签名不变。
+- 正式APK 7,321,599字节；SHA-256：8ccc95de74c35f6e77d35d3df7e7ad9ac111af0e3efae977d5d8b38da5aaba71。
+- 签名SHA-256：12c9858dc73f6bfab725bb10ec341e3a203344f9bd8f1cea0b3874106ba25d3e。
+- 未调试、无专用激活asset；测试runner只在独立test APK中。该正式APK已从Debian发布到现有SSH/SFTP更新目录，原子更新latest.json，保留0.2.8。
+
+USB目标机与实际结果
+- 一加7 Pro / GM1910 / guacamole，Android16，ARM64；USB序列22dcef5b，1440x3120、density560、fontScale1.0。
+- 以adb install -r覆盖0.2.8，无清数据/卸载正式应用。现有连接偏好摘要、当前Android用户0及微信Bot进程均与操作前一致。
+- FileDownloadInstrumentation在正式APK上连接实际Codex服务器，读取本任务独立fixture，无修改聊天或连接。
+- 6类fixture：PDF、DOCX、UTF-8文本、空文件、40MiB二进制、无扩展名PNG。全部流式下载SHA/大小一致、进度单调；40MiB证明不再受8/32MiB读取上限限制。
+- PDF/DOCX保持不支持预览的正文、真实MIME和元数据，MediaStore保存后重新读取SHA一致；重复点击只保存一次；成功关闭当前面板，重开恢复已保存URI。
+- 取消及下载中断连均失败并删除临时文件；缺失文件/目录被拒绝；文本、空文本和错误状态正确。
+- 构造迟到回调验证旧结果不覆盖新面板，关闭/切换连接清理旧请求；长文件名保留扩展名。
+- Markdown普通链接、中文空格/括号路径、角括号路径、转义括号、畸形链接及既有Markdown/异步消息回归通过。
+- 原有无扩展名图片预览保留；BMP/AVIF/WBMP沿用既有ImageViewer路径。
+- 真机截图核对紧凑底部面板、32dp水平留白、元数据和完整路径、无拖拽柄，聊天列表背景保留；真实点击下载后出现带“打开”的提示。
+- 真实点击“打开”出现系统选择器，并在系统PDF阅读器显示fixture文档“Codex download verification”。ACTION_VIEW、MIME、ClipData和读取授权另有仪器断言。
+- 一次额外UI采集在系统选择器前台时未完成启动，主动结束该次仪器进程；该记录不计通过。随后干净启动的完整下载→打开→PDF显示链通过，且仪器清理测试下载成功。
+
+边界
+- Android8/9采用SAF兼容保存，仅编译/lint核对，未在这两个系统运行；其提示为“已保存”，不误称Downloads。
+- DOCX下载/MIME/SHA已实测；此机没有Word渲染器，未声称验证Word内容渲染。
+- 不新增HTML执行或视频播放器；纯文本预览限48KiB，完整文件仍可下载。
+- 本次未重新验证所有聊天功能和其他安卓设备，也未向GitHub推送新源码/Release。
+
+永久证据
+/srv/buildlab/artifacts/codex-mobile/20261116-file-download/
+  release/Codex-0.2.9.apk
+  binary-audit.json
+  evidence/：定向解包、原生行为索引与参考录屏
+  qa/：fixture生成方式、仪器结果、截图、安装前后摘要
+  source/：最终源码与manifest（不包含邀请输入、用户附件或无关数学文件）
+  logs/：构建、lint、任务状态和发布记录

@@ -24,6 +24,11 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class SavedConnection(val id: String, val profile: ConnectionProfile, val hasCredential: Boolean)
 
+/** Pending enrollment is never returned by list() or selected as a usable connection. */
+class PendingBootstrap(val inviteId: String, val connectionId: String, val credential: SshCredential) : AutoCloseable {
+    override fun close() = credential.close()
+}
+
 /** Safe UI text only; never attach a provider exception containing credential data. */
 class ConnectionStorageException(message: String) : Exception(message)
 
@@ -79,7 +84,11 @@ class ConnectionStore(context: Context) {
 
     @Synchronized fun loadCredential(id: String): SshCredential? {
         val encoded = prefs.getString("secret:$id", null) ?: return null
-        return guarded("无法解密这条连接的凭据。请重新导入密钥或输入密码；原有数据已保留。") {
+        return decrypt(id, encoded)
+    }
+
+    private fun decrypt(id: String, encoded: String): SshCredential =
+        guarded("无法解密这条连接的凭据。请重新导入密钥或输入密码；原有数据已保留。") {
             val envelope = JSONObject(encoded)
             require(envelope.getInt("v") == 1)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -90,6 +99,75 @@ class ConnectionStore(context: Context) {
             val plain = cipher.doFinal(Base64.decode(envelope.getString("data"), Base64.NO_WRAP))
             try { decodeCredential(plain) } finally { plain.fill(0) }
         }
+
+    /** Persist a terminal decision so deleting a connection cannot restart enrollment. */
+    @Synchronized fun canBootstrap(): Boolean {
+        if (prefs.getString("bootstrap:state", null) in setOf("completed", "cancelled", "existing")) return false
+        if (list().isNotEmpty()) {
+            commitBootstrap(prefs.edit().putString("bootstrap:state", "existing").remove("bootstrap:pending"),
+                "bootstrap:state", "bootstrap:pending")
+            return false
+        }
+        return true
+    }
+
+    @Synchronized fun loadPendingBootstrap(inviteId: String): PendingBootstrap? {
+        val encoded = prefs.getString("bootstrap:pending", null) ?: return null
+        return guarded("无法读取首次连接资料；原有数据已保留。") {
+            val record = JSONObject(encoded)
+            require(record.getString("inviteId") == inviteId)
+            val id = record.getString("id")
+            // SharedPreferences may retain a failed commit in memory. Force a fresh disk
+            // generation before this key can be sent to the server, including on retries.
+            commitBootstrap(prefs.edit().putString("bootstrap:pending", encoded)
+                .putString("bootstrap:durable", UUID.randomUUID().toString()), "bootstrap:pending", "bootstrap:durable")
+            PendingBootstrap(inviteId, id, decrypt(id, record.getString("secret")))
+        }
+    }
+
+    /** Called before any enrollment request; a retry always reuses this exact private key. */
+    @Synchronized fun savePendingBootstrap(inviteId: String, credential: SshCredential): PendingBootstrap? {
+        if (!canBootstrap()) return null
+        loadPendingBootstrap(inviteId)?.let { return it }
+        val id = UUID.randomUUID().toString()
+        val record = JSONObject().put("inviteId", inviteId).put("id", id).put("secret", encrypt(id, credential))
+        commitBootstrap(prefs.edit().putString("bootstrap:state", "pending").putString("bootstrap:pending", record.toString()),
+            "bootstrap:state", "bootstrap:pending")
+        return loadPendingBootstrap(inviteId)
+    }
+
+    /** Metadata, encrypted credential, active selection and completion marker commit together. */
+    @Synchronized fun finishBootstrap(inviteId: String, profile: ConnectionProfile, workspace: String): SavedConnection? =
+        guarded("无法保存首次连接；请重试，已有资料已保留。") {
+            if (!canBootstrap()) return@guarded null
+            val record = JSONObject(prefs.getString("bootstrap:pending", null) ?: error("pending missing"))
+            require(record.getString("inviteId") == inviteId)
+            val id = record.getString("id")
+            val saved = SavedConnection(id, profile, true)
+            commitBootstrap(prefs.edit().putString("profiles", serialize(listOf(saved))).putString("active", id)
+                .putString("secret:$id", record.getString("secret")).putString("workspace", workspace)
+                .putString("bootstrap:state", "completed").remove("bootstrap:pending").remove("bootstrap:durable"),
+                "profiles", "active", "secret:$id", "workspace", "bootstrap:state", "bootstrap:pending", "bootstrap:durable")
+            saved
+        }
+
+    @Synchronized fun cancelBootstrap(): SavedConnection? {
+        if (prefs.getString("bootstrap:state", null) == "completed") return list().firstOrNull { it.id == activeId }
+        // Retain the encrypted pending key if the server claimed it before cancellation.
+        // It is never a visible connection and cancellation never retries automatically.
+        commitBootstrap(prefs.edit().putString("bootstrap:state", "cancelled"), "bootstrap:state")
+        return null
+    }
+
+    private fun commitBootstrap(edit: android.content.SharedPreferences.Editor, vararg keys: String) {
+        val previous = keys.associateWith { prefs.getString(it, null) }
+        if (edit.commit()) return
+        // Restore the pre-operation memory view too: commit(false) can already have
+        // changed it. A retry must not mistake a failed completion/cancellation for success.
+        val rollback = prefs.edit()
+        previous.forEach { (key, value) -> rollback.putString(key, value) }
+        rollback.commit()
+        throw ConnectionStorageException("无法保存首次连接，请检查设备存储空间后重试。")
     }
 
     @Synchronized fun remove(id: String) {

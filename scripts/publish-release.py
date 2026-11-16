@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 PACKAGE = 'com.nanci.codexremote'
@@ -159,6 +160,15 @@ def inspect(apk: Path, aapt: str, apksigner: str) -> dict:
         raise ValueError(f'APK does not exist or is a symlink: {apk}')
     if not 0 < apk.stat().st_size <= APK_LIMIT:
         raise ValueError('APK size is outside the 100 MiB client limit')
+    # A private first-install APK contains a bearer enrollment invitation.
+    # Never distribute it through the shared update channel, even if its
+    # package, version, and signing certificate otherwise match a release.
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            if 'assets/codex-bootstrap.json' in archive.namelist():
+                raise ValueError('private enrollment APK cannot be published to the shared update channel')
+    except zipfile.BadZipFile as error:
+        raise ValueError('APK is not a valid ZIP archive') from error
     badging = run(aapt, 'dump', 'badging', str(apk))
     # Release APKs must not grant debug access or be marked test-only.  These
     # Android attributes live on <application>; missing means the platform's

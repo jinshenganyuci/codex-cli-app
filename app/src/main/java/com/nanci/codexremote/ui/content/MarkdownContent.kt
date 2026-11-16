@@ -158,9 +158,12 @@ internal fun inlineMarkdown(source: String): AnnotatedString = buildAnnotatedStr
             if (text[i] == '\\' && i + 1 < text.length && text[i + 1] in "\\`*_{}[]()#+-.!|") { append(text[i + 1]); i += 2; continue }
             if (text[i] == '[') {
                 val middle = text.indexOf("](", i + 1)
-                val end = if (middle >= 0) text.indexOf(')', middle + 2) else -1
+                val end = if (middle >= 0) linkDestinationEnd(text, middle + 2) else -1
                 if (middle > i && end > middle) {
-                    val url = text.substring(middle + 2, end).substringBefore(" \"")
+                    val raw = text.substring(middle + 2, end).trim()
+                    val url = (if (raw.startsWith('<')) raw.substring(1, raw.indexOf('>'))
+                        else raw.substringBefore(" \""))
+                        .replace(Regex("\\\\([\\\\()<>])"), "$1")
                     pushStringAnnotation("url", url)
                     pushStyle(SpanStyle(color = Color(0xFF2755B4), textDecoration = TextDecoration.Underline))
                     appendRange(text.substring(i + 1, middle), depth + 1); pop(); pop(); i = end + 1; continue
@@ -196,6 +199,30 @@ internal fun inlineMarkdown(source: String): AnnotatedString = buildAnnotatedStr
         }
     }
     appendRange(source)
+}
+
+/** File names can contain balanced/escaped parentheses, or be enclosed in angle brackets. */
+private fun linkDestinationEnd(text: String, start: Int): Int {
+    var nesting = 0
+    var angled = false
+    var quoted = false
+    var i = start
+    while (i < text.length && text[i] in " \t") i++
+    val destinationStart = i
+    while (i < text.length) {
+        val c = text[i]
+        if (c == '\\') { i += 2; continue }
+        if (i == destinationStart && c == '<') angled = true
+        else if (angled) { if (c == '>') angled = false }
+        else if (c == '"') quoted = !quoted
+        else if (!quoted) when (c) {
+            '(' -> nesting++
+            ')' -> if (nesting == 0) return i else nesting--
+            '\n' -> return -1
+        }
+        i++
+    }
+    return -1
 }
 
 private fun isMarkdownPunctuation(c: Char?): Boolean = c != null && when(Character.getType(c)) {

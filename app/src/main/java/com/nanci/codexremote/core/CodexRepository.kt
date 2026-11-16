@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.InputStream
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -775,6 +776,25 @@ class CodexRepository : CoreContract {
     }
     override fun readFile(absolutePath: String, maxBytes: Int): CompletableFuture<ByteArray> = task {
         mainFuture(transport.readFile(absolutePath, maxBytes), epoch)
+    }
+
+    /** Progress runs on the transport worker; the returned future completes on the main thread. */
+    fun downloadFile(
+        absolutePath: String,
+        destination: File,
+        cancelled: () -> Boolean,
+        onProgress: (Long, Long) -> Unit,
+    ): CompletableFuture<Long> = task {
+        if (!destination.isAbsolute || destination.exists() && (!destination.isFile || destination.length() != 0L))
+            return@task failed(CodexException("无法创建临时下载文件"))
+        mainFuture(transport.downloadFile(absolutePath, destination, cancelled, onProgress), epoch)
+            .thenApply { size ->
+                if (cancelled()) throw CodexException("文件读取已取消")
+                size
+            }.whenComplete { _, error ->
+                // The repository may invalidate a completed transport download before main-thread delivery.
+                if (error != null) runCatching { destination.delete() }
+            }
     }
 
     private fun rpc(method: String, params: JSONObject, token: Long = epoch, reportError: Boolean = true): CompletableFuture<JSONObject> =

@@ -14,3 +14,5 @@
 - 逐帧覆盖与排除说明：上述最后目录的 `video-final/ARCHIVE-README.txt`。
 
 仓库内的 `docs/releases/0.2.7-verification.txt` 是便于恢复工作的摘要。完整视频/截图含设备与聊天画面，不上传到 GitHub。早期多 Activity 测试录像明确排除为普通重连问题的因果证据。
+
+远程文件下载的原生调用链、尺寸和行为见 [远程文件下载](REMOTE_FILES.md)。本次定向解包与两段录屏核对归档于 Debian `codex-mobile/20261116-file-download` 产物目录。

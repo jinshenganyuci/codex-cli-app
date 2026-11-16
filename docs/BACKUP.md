@@ -1,6 +1,6 @@
 # 备份与恢复
 
-仓库：`https://github.com/jinshenganyuci/codex-cli-app`，当前为私有仓库。
+仓库：`https://github.com/jinshenganyuci/codex-cli-app`，当前为公开仓库。
 
 ## 已备份的范围
 
@@ -10,6 +10,8 @@
 - `v0.2.7` Release 保存已验证的正式 APK、原源码 ZIP、验证说明与 SHA-256 清单。APK 不放进 Git 源码历史。
 
 GitHub 备份不包含 SSH 私钥、API Key、签名密钥、手机连接偏好、服务器聊天记录、用户项目文件或原 ChatGPT 安装包。完整测试证据的位置见 `APK_REFERENCE.md`。不要把整个旧工作目录或 `outputs` 打包推送；旧目录中存在私有连接材料。
+
+0.2.9 已同步后续的免配置首装、文件下载面板和流式下载源码；GitHub Actions 从版本标签自动构建发布 APK，签名保持一致。
 
 ## 恢复代码
 
@@ -21,7 +23,7 @@ cd codex-cli-app
 git checkout v0.2.7
 ```
 
-继续开发使用 `main`。Mac 当前工作区为 `/Users/nanci/Documents/ChatGPT/codex cli app`，源码在 Mac 编辑后单向同步 Debian；构建、测试和 GitHub 推送仍由 Debian 完成。备份不会自动运行，后续每个阶段提交后从 Debian 推送并核对远端提交。
+继续开发使用 `main`。Mac 当前工作区为 `/Users/nanci/Documents/ChatGPT/codex cli app`，源码在 Mac 编辑后单向同步 Debian；构建、测试和 GitHub 推送仍由 Debian 完成。源码仍由 Debian 推送并核对远端提交。用户另行配置了 GitHub Actions 自动构建发布：推送匹配版本标签后在 GitHub runner 构建，详见 [GitHub 自动发布](GITHUB_RELEASE.md)。
 
 ## 恢复构建
 
@@ -29,7 +31,7 @@ git checkout v0.2.7
 
 在其他 Debian 上配置相同 JDK/SDK 后，可直接运行 `./gradlew :app:assembleDebug` 做开发检查。正式覆盖升级必须使用原签名配置，以环境变量 `CODEX_MOBILE_SIGNING_KEYSTORE`、`CODEX_MOBILE_SIGNING_PASSWORD` 提供；正式发版使用项目构建/发布脚本并递增 versionCode。
 
-现有签名文件独立保存在 Debian 受限产物目录 `/srv/buildlab/artifacts/codex-mobile/20261115-android-v01/signing/`。签名凭据不会上传到 GitHub；丢失原签名后，重新生成的签名无法覆盖已安装的正式包。源码备份与原签名的受限备份需要分别保管。
+现有签名文件独立保存在 Debian 受限产物目录 `/srv/buildlab/artifacts/codex-mobile/20261115-android-v01/signing/`。签名凭据不会进入 Git 历史或 Release 附件；自动构建所需的原签名仅存于仓库加密 Actions secrets。丢失原签名后，重新生成的签名无法覆盖已安装的正式包。源码备份与原签名的受限备份需要分别保管。
 
 ## 0.2.7 产物核对
 

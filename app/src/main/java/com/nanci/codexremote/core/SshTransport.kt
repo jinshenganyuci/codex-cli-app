@@ -10,6 +10,7 @@ import com.jcraft.jsch.UserInfo
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
@@ -304,6 +305,57 @@ internal class SshTransport(private val listener: Listener) : AutoCloseable {
         val attr = channel.stat(path)
         if (attr.isDir || attr.size > maxBytes) throw CodexException("文件超过预览大小限制")
         channel.get(path).use { input -> readBounded(input, maxBytes) }
+    }
+
+    /** The caller owns a unique temporary destination; unsuccessful downloads remove it. */
+    fun downloadFile(
+        absolutePath: String,
+        destination: File,
+        cancelled: () -> Boolean,
+        onProgress: (Long, Long) -> Unit,
+    ): CompletableFuture<Long> {
+        if (!destination.isAbsolute || destination.exists() && (!destination.isFile || destination.length() != 0L))
+            return failed(CodexException("无法创建临时下载文件"))
+        val owner = generation
+        fun checkActive() {
+            if (cancelled() || Thread.currentThread().isInterrupted) throw CodexException("文件读取已取消")
+            if (generation != owner || !connected || disposed) throw CodexException("连接已切换，请重新打开文件")
+        }
+        return sftp { channel ->
+            checkActive()
+            require(absolutePath.startsWith('/') && !absolutePath.contains('\u0000'))
+            val attr = channel.stat(absolutePath)
+            if (!attr.isReg || attr.size < 0L) throw CodexException("此路径不是可下载的文件")
+            val available = destination.parentFile?.usableSpace ?: 0L
+            if (available > 0L && attr.size > available) throw CodexException("设备存储空间不足")
+            var copied = 0L
+            onProgress(copied, attr.size)
+            channel.get(absolutePath).use { input ->
+                destination.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        checkActive()
+                        val count = input.read(buffer)
+                        checkActive()
+                        if (count < 0) break
+                        if (count == 0) continue
+                        if (count.toLong() > attr.size - copied) throw CodexException("文件已发生变化，请重新下载")
+                        output.write(buffer, 0, count)
+                        copied += count
+                        onProgress(copied, attr.size)
+                    }
+                }
+            }
+            checkActive()
+            val current = channel.stat(absolutePath)
+            if (copied != attr.size || !current.isReg || current.size != attr.size || current.mTime != attr.mTime)
+                throw CodexException("文件未完整读取或已发生变化，请重新下载")
+            checkActive()
+            copied
+        }.whenComplete { _, error ->
+            // Include sftp's final connection-generation check, not only failures inside the copy.
+            if (error != null) runCatching { destination.delete() }
+        }
     }
 
     fun upload(name: String, input: InputStream, size: Long): CompletableFuture<String> {

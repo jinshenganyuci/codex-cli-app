@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,9 +13,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,15 +26,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nanci.codexremote.connection.*
@@ -48,8 +42,6 @@ import com.nanci.codexremote.update.UpdateUi
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.CompletableFuture
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState:Bundle?) {
@@ -94,6 +86,7 @@ private fun RemoteApp(vm:RemoteViewModel) {
     var latestRequest by remember(state.selectedThread?.id) { mutableIntStateOf(0) }
     var route by remember { mutableStateOf("home") }
     var editing by remember { mutableStateOf<SavedConnection?>(null) }
+    BootstrapUi(vm.bootstrap) { editing = null; route = "connection" }
     var planText by remember { mutableStateOf<String?>(null) }
     var rename by remember { mutableStateOf<ThreadActionTarget?>(null) }
     var archive by remember { mutableStateOf<ThreadActionTarget?>(null) }
@@ -103,6 +96,7 @@ private fun RemoteApp(vm:RemoteViewModel) {
     var fullAccess by remember { mutableStateOf(false) }
     var workspaceOpen by remember { mutableStateOf(false) }
     var exportText by rememberSaveable { mutableStateOf("") }
+    var fileExportId by rememberSaveable { mutableStateOf<Long?>(null) }
     var cameraUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var attachmentOwner by rememberSaveable { mutableStateOf("") }
     var openedImage by remember {mutableStateOf<ImageSource?>(null)}
@@ -131,9 +125,9 @@ private fun RemoteApp(vm:RemoteViewModel) {
     val copy:(String)->Unit={ text -> (context.getSystemService(ClipboardManager::class.java)).setPrimaryClip(ClipData.newPlainText("Codex",text)) }
     val openLink:(String)->Unit={ link ->
         if(link.startsWith("data:image/",true))openImage(ImageSource(ImageSourceKind.DataUri,link,cacheKey="link:${System.identityHashCode(link)}"))
-        else if(link.startsWith('/') && link.substringAfterLast('.').lowercase() in setOf("png","jpg","jpeg","webp","gif","heic","heif"))
+        else if(link.startsWith('/') && link.substringAfterLast('.').lowercase() in setOf("png","jpg","jpeg","webp","gif","heic","heif","bmp","avif","wbmp"))
             openImage(ImageSource(ImageSourceKind.RemotePath,link,cacheKey=link))
-        else if(link.startsWith('/'))vm.observe(vm.repo.readFile(link,8*1024*1024)) {vm.previewFile=link to it}
+        else if(link.startsWith('/'))vm.files.open(link)
         else runCatching { val uri=Uri.parse(link); require(uri.scheme in listOf("https","http","mailto")); context.startActivity(Intent(Intent.ACTION_VIEW,uri)) }
                 .onFailure { vm.message="无法打开此链接" }
     }
@@ -142,9 +136,9 @@ private fun RemoteApp(vm:RemoteViewModel) {
             .onFailure { vm.message="文件保存失败" }.onSuccess { vm.message="已保存" }
     }
     val download:(String)->Unit={ exportText=it; exportLauncher.launch("Codex-plan.md") }
-    val fileExportLauncher=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-        if(uri!=null)vm.exportFile?.let { bytes->vm.saveBytes(uri,bytes) }
-        vm.exportFile=null
+    val fileExportLauncher=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        vm.files.completeDocumentSave(fileExportId,result.data?.data.takeIf { result.resultCode == android.app.Activity.RESULT_OK })
+        fileExportId=null
     }
     val imageExportLauncher=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/*")) {uri ->
         val export=vm.imageExport;vm.imageExport=null
@@ -163,6 +157,14 @@ private fun RemoteApp(vm:RemoteViewModel) {
         } } catch(e:Exception) { vm.message="无法打开附件选择器" }
     }
     LaunchedEffect(vm.message) { vm.message?.let { text -> snack.showSnackbar(text);if(vm.message==text)vm.message=null } }
+    val fileNotice=vm.files.notices.firstOrNull()
+    LaunchedEffect(fileNotice?.id) {
+        fileNotice?.let { notice ->
+            val result=snack.showSnackbar(if(notice.file.savedToDownloads)"已保存到“下载”文件夹" else "已保存",actionLabel="打开",duration=SnackbarDuration.Long)
+            if(result==SnackbarResult.ActionPerformed)vm.files.openSaved(context,notice.file)
+            vm.files.consumeNotice(notice.id)
+        }
+    }
     BackHandler(route!="home" || !vm.home || planText!=null) {
         when {
             planText!=null->planText=null
@@ -354,7 +356,15 @@ private fun RemoteApp(vm:RemoteViewModel) {
     if(fullAccess)AlertDialog(onDismissRequest={fullAccess=false},title={Text("允许完全访问？")},text={Text("Codex 将能够修改此服务器上的文件并执行命令，无需逐次审批。")},
         confirmButton={TextButton(onClick={vm.selectPermission(ShellPermission.FullAccess);fullAccess=false}){Text("允许")}},dismissButton={TextButton(onClick={fullAccess=false}){Text("取消")}})
     if(workspaceOpen)WorkspacePicker(vm,onClose={workspaceOpen=false})
-    vm.previewFile?.let { (path,bytes)->RemoteFilePreview(path,bytes,onClose={vm.previewFile=null},onDownload={vm.exportFile=bytes;fileExportLauncher.launch(path.substringAfterLast('/'))}) }
+    vm.files.state?.let { file -> RemoteFileSheet(file,onDismiss=vm.files::dismiss,onDownload={
+        if(Build.VERSION.SDK_INT>=29)vm.files.saveToDownloads()
+        else vm.files.beginDocumentSave()?.let { save ->
+            fileExportId=save.id
+            runCatching {fileExportLauncher.launch(save.intent)}.onFailure {vm.files.completeDocumentSave(save.id,null);fileExportId=null;vm.message="无法打开文件保存器"}
+        }
+    },onOpen={vm.files.openSaved(context,it)},onOpenImage={
+        openImage(ImageSource(ImageSourceKind.RemotePath,file.path,mimeType=file.mimeType,cacheKey=file.path))
+    }) }
     openedImage?.let {source -> ImageViewer(source,imageLoader,onClose={openedImage=null},onSave={
         vm.imageExport=imageOwner to source;imageExportLauncher.launch(imageFileName(source))
     })}
@@ -385,37 +395,6 @@ private fun threadActionError(error:Throwable):String = when(val cause=generateS
     is CodexException -> cause.safeMessage
     is SectionMovePendingException -> cause.message.orEmpty()
     else -> "操作未完成，请检查连接后重试。"
-}
-
-private class DecodedFile(val bitmap:android.graphics.Bitmap?,val text:String?)
-@Composable
-private fun RemoteFilePreview(path:String,bytes:ByteArray,onClose:()->Unit,onDownload:()->Unit) {
-    val decoded by produceState<DecodedFile?>(null,bytes) {
-        value=withContext(Dispatchers.IO) {
-            val bitmap=runCatching {ImagePipeline.decode(bytes,2048)}.getOrNull()
-            val text=if(bitmap==null)runCatching {Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes,0,minOf(bytes.size,48*1024))).toString() +
-                (if(bytes.size>48*1024)"\n\n仅预览前 48 KB，保存可查看完整文件。" else "")}.getOrNull() else null
-            DecodedFile(bitmap,text)
-        }
-    }
-    val bitmap=decoded?.bitmap
-    Dialog(onDismissRequest=onClose,properties=DialogProperties(usePlatformDefaultWidth=false)) {
-        Column(Modifier.fillMaxSize().background(Color(0xFFFAFAFA)).systemBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(12.dp),verticalAlignment=Alignment.CenterVertically) {
-                TextButton(onClick=onClose){Text("关闭")};Text(path.substringAfterLast('/'),Modifier.weight(1f),maxLines=1,fontSize=14.sp);TextButton(onClick=onDownload){Text("保存")}
-            }
-            if(decoded==null)Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {CircularProgressIndicator()}
-            else if(bitmap!=null) {
-                var scale by remember {mutableFloatStateOf(1f)}
-                val transform=rememberTransformableState { zoom,_,_->scale=(scale*zoom).coerceIn(1f,5f) }
-                Image(bitmap.asImageBitmap(),path,Modifier.fillMaxSize().transformable(transform).graphicsLayer(scaleX=scale,scaleY=scale))
-            } else {
-                val text=decoded?.text
-                if(text!=null)androidx.compose.foundation.text.selection.SelectionContainer {Text(text,Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),fontSize=13.sp,lineHeight=20.sp)}
-                else Text("此文件无法直接预览，可以保存后打开。",Modifier.padding(20.dp))
-            }
-        }
-    }
 }
 
 @Composable

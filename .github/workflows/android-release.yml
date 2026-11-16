@@ -1,0 +1,96 @@
+name: Android build and release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'jinshenganyuci/codex-cli-app' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+        with:
+          cache-read-only: false
+          # Signing material lives in RUNNER_TEMP, outside all Gradle caches.
+          gradle-home-cache-excludes: |
+            daemon
+            caches/*/configuration-cache
+      - name: Install Android SDK components
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
+      - name: Build and verify the signed APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: bash scripts/ci-android-release.sh
+      - name: Remove signing files
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/codex-android-signing"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codex-apk-${{ github.run_id }}
+          path: |
+            dist/*.apk
+            dist/SHA256SUMS
+            dist/release-metadata.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: codex-apk-${{ github.run_id }}
+          path: dist
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check SHA256SUMS)
+          python3 - <<'PY'
+          import json, os, pathlib
+          m = json.loads(pathlib.Path('dist/release-metadata.json').read_text())
+          assert os.environ['RELEASE_TAG'] == 'v' + m['versionName']
+          pathlib.Path('release-notes.txt').write_text(
+              '由 GitHub Actions 从此版本标签构建，沿用正式签名，可覆盖安装。\n\n'
+              '版本：' + m['versionName'] + '（code ' + str(m['versionCode']) + '）\n'
+              'SHA-256：`' + m['sha256'] + '`\n\n'
+              'CI 已完成 Release 构建、Android lint、包名/签名/版本/私有资源检查；'
+              '不将 CI 构建成功视为真机功能验证。\n', encoding='utf-8')
+          PY
+          if gh release view "$RELEASE_TAG" --json isDraft > existing-release.json 2>/dev/null; then
+            python3 -c 'import json; assert json.load(open("existing-release.json"))["isDraft"], "Refusing to replace an already published release"'
+          else
+            args=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft "${args[@]}" \
+              --title "Codex ${RELEASE_TAG#v}" --notes-file release-notes.txt
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.apk dist/SHA256SUMS dist/release-metadata.json --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --notes-file release-notes.txt

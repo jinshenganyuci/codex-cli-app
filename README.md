@@ -2,7 +2,7 @@
 
 原生 Kotlin / Jetpack Compose 手机客户端。通过带 SHA-256 主机指纹校验的 SSH 连接服务器上的 `codex app-server daemon` / `proxy`，复用服务器的模型提供方、URL、API Key 与聊天历史。手机中不包含模型提供方的 Key，也不需要 ChatGPT App 登录。
 
-当前已验证版本为 **0.2.7**。项目源码备份与正式安装包保存在本仓库及 [Releases](https://github.com/jinshenganyuci/codex-cli-app/releases)；恢复方式见 [备份与恢复](docs/BACKUP.md)，参考资料位置见 [界面参考说明](docs/APK_REFERENCE.md)。
+当前已验证版本为 **0.2.9**。源码已同步 GitHub；推送版本标签会由 [GitHub Actions](https://github.com/jinshenganyuci/codex-cli-app/actions) 自动构建并发布到 [Releases](https://github.com/jinshenganyuci/codex-cli-app/releases)。0.2.9 同时保留现有服务器在线更新通道和 Debian 验证产物。恢复方式见 [备份与恢复](docs/BACKUP.md)，参考资料位置见 [界面参考说明](docs/APK_REFERENCE.md)。
 
 ## 使用
 
@@ -30,6 +30,10 @@
 
 0.2.7 将软键盘的输入框展开与实际 IME 动画目标同步，不再在刚获得焦点时提前展开。关闭输入法的清理只对当前编辑会话生效，前后台切换或重新点击会撤销旧清理，避免返回后新焦点被误清除。重连期间保留当前聊天与已加载图片，允许编辑所属草稿；发送等待连接及聊天恢复完成。相同连接的进行中重连会复用，启动入口复用当前 Activity。显式切换聊天或服务器仍按目标绑定草稿，不混用旧内容。
 
+0.2.8 支持专用首装包免配置激活。手机首次启动生成自己的 SSH 密钥，先在 Android Keystore 保护下保存，再用专用邀请注册公钥；安装包不含 SSH 私钥或模型服务密钥。邀请只绑定一台手机，同一密钥可重试。现有连接不会被覆盖，激活成功后可安装同包名、同签名的普通更新继续使用。专用首装包和普通更新包分开交付，发布脚本拒绝把带邀请的包上传到共用更新目录。详见 [免配置安装](docs/SHARED_INSTALL.md) 和 [0.2.8 验证记录](docs/releases/0.2.8-verification.txt)。
+
+0.2.9 根据 ChatGPT Android 原生实现及录屏适配远程文件底部面板，展示加载、文件名、大小和路径。保存到手机下载目录后提供系统打开；流式下载不再受原先 8 MiB 预览限制。PDF/Word 不再显示乱码或空白全屏页，保留图片和文本预览，并修复带括号/空格的文件链接。原生依据见 [远程文件下载](docs/REMOTE_FILES.md)，目标机检查见 [0.2.9 验证记录](docs/releases/0.2.9-verification.txt)。
+
 ## 已实现的交互类型
 
 - 命令、文件和额外权限审批，以及旧协议审批兼容。
@@ -53,7 +57,7 @@ Markdown 为本地原生解析的常用子集；差异视图支持文件分组�
 
 `app/src/debug` 中的组件预览、输入法/滚动检查、实际图片检查与一次性私有目录凭据导入 Activity 仅供开发测试，Release 不包含这些 Activity。图片检查的原始素材由测试时写入应用私有目录，不打包进 APK。正常用户通过设置页导入连接，不依赖 Debug 入口。
 
-真实升级测试可在 Debian 以 `CODEX_MOBILE_TEST_BASE=1` 仅构建 Debug variant，其实际安装版本号为 7、名称为 `0.2.5-update-test`；正式 Release 始终使用生产版本号 10（0.2.7）。测试基包只用于验证系统从旧版覆盖升级，严禁发布。更新判断使用 PackageManager 的实际安装版本，不依赖测试 variant 的 BuildConfig 常量。
+真实升级测试可在 Debian 以 `CODEX_MOBILE_TEST_BASE=1` 构建 Debug variant，其实际安装版本号为 7、名称为 `0.2.5-update-test`；普通 Release 使用生产版本号 12（0.2.9）。首装激活验证使用独立测试邀请和 `CODEX_MOBILE_BOOTSTRAP_TEST_BASE=1`，生成 code10 的 `0.2.8-invite-test` Release 基包，避免为测试降级已有手机。两类测试包均严禁发布。更新判断使用 PackageManager 的实际安装版本，不依赖测试 variant 的 BuildConfig 常量。
 
 正式发布在 Debian 使用 `scripts/publish-release.py --help` 所列参数，提供已验证的正式 APK、上一正式版作为签名基线、可信 SSH 主机密钥文件以及版本说明。工具先校验包身份、签名和版本，拒绝可调试/测试包，再上传并校验，最后原子更新版本索引。认证通过任务专用 SSH agent 转发，不复制或长期保存私钥。仅在用户要求交付正式更新时执行发布。
 
@@ -61,4 +65,6 @@ Markdown 为本地原生解析的常用子集；差异视图支持文件分组�
 
 ## 验证记录
 
-完整构建、协议及真机记录随每个实际 APK 版本归档在 Debian 的 `codex-mobile/20261116-android-v02` 产物目录。Debug 组件预览用于固定 UI 状态检查；它不是服务器审批成功的证据。真实服务器协议检查与 USB 手机交互检查分别记录。
+0.2.7 完整构建、协议及真机记录归档在 Debian 的 `codex-mobile/20261116-android-v02` 产物目录；0.2.8 的首装和更新验证归档在 `codex-mobile/20261116-share-install`；0.2.9 文件下载验证归档在 `codex-mobile/20261116-file-download`。Debug 组件预览用于固定 UI 状态检查；它不是服务器审批成功的证据。真实服务器协议检查与 USB 手机交互检查分别记录。
+
+GitHub 自动构建的签名配置、标签规则与发布步骤见 [GitHub 自动发布](docs/GITHUB_RELEASE.md)。

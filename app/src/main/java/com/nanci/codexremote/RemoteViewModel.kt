@@ -50,14 +50,13 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     var permission by mutableStateOf(ShellPermission.Default)
     var fast by mutableStateOf(false)
     var focusRequest by mutableStateOf(0)
-    var previewFile by mutableStateOf<Pair<String,ByteArray>?>(null)
-    var exportFile:ByteArray?=null
     var imageExport:Pair<String,ImageSource>?=null
     var changedFiles by mutableStateOf<ChangedFilesSummary?>(null); private set
     private var diffOwner:String?=null
     private var diffSequence=0L
     private var diffRefreshTask:Runnable?=null
     private var disposed=false
+    val files = RemoteFileCoordinator(app, ::imageOwner, repo::downloadFile) { message = it }
     val images=ImagePipeline(app) {owner,path,maxBytes ->
         val result=CompletableFuture<ByteArray>()
         main.post {
@@ -225,15 +224,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         if(refreshDiff || !incoming.connected)refreshWorkingDiff()
     }
 
+    val bootstrap = BootstrapCoordinator(app, store) { saved, initialWorkspace ->
+        reloadConnections()
+        workspace = initialWorkspace
+        connect(saved)
+    }
+
     init {
         reloadConnections()
         draftKey="${activeConnection?.id}:new"
         draft=prefs.getString("draft:$draftKey","").orEmpty()
         runCatching { workspace = store.workspace }.onFailure { message = "无法读取工作目录" }
+        bootstrap.start()
     }
 
     fun reloadConnections() {
-        try { connections = store.list(); activeConnection = connections.firstOrNull { it.id == store.activeId } }
+        try { connections = store.list(); activeConnection = connections.firstOrNull { it.id == store.activeId }; files.onOwnerChanged() }
         catch(e:Exception) { message = e.message ?: "读取连接失败" }
     }
     fun saveConnection(profile:ConnectionProfile, secret:SshCredential?, id:String?):Boolean {
@@ -262,7 +268,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 val switching=!sameRecord || !sameOwner
                 if(switching) { manualDisconnect=true;repo.disconnect();selectionId=null;home=true;creating=false;homeDraftTransferOwner=null;attachments=emptyList();waitingAttachments.clear();model="";effort="";planMode=false;permission=ShellPermission.Custom;draftKey="${saved.id}:new";draft=if(sameRecord)"" else prefs.getString("draft:$draftKey","").orEmpty() }
                 else if(force) {manualDisconnect=true;repo.disconnect()}
-                activeConnection=saved;manualDisconnect=false;message=null
+                activeConnection=saved;files.onOwnerChanged();manualDisconnect=false;message=null
                 repo.connect(saved.profile,secret).whenComplete { _,error -> if(attempt==connectAttempt && activeConnection?.id==saved.id && error!=null) {if(!silent)message=safeError(error);scheduleReconnect()} }
             } finally {secret.close()}
         } catch(e:Exception) { message=e.message ?: "连接失败" }
@@ -585,5 +591,5 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         val cause=generateSequence(error) { it.cause }.last()
         return (cause as? CodexException)?.safeMessage ?: cause.message?.take(220) ?: "操作未完成，请检查连接"
     }
-    override fun onCleared() { disposed=true;diffSequence++;persistDraft(); manualDisconnect=true; subscription.close(); images.close(); repo.close(); io.shutdown(); main.removeCallbacksAndMessages(null) }
+    override fun onCleared() { disposed=true;diffSequence++;bootstrap.close();files.close();persistDraft(); manualDisconnect=true; subscription.close(); images.close(); repo.close(); io.shutdown(); main.removeCallbacksAndMessages(null) }
 }
