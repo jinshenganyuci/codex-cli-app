@@ -1,6 +1,8 @@
-# Codex 局域网 Android 客户端
+# codex cli app
 
 原生 Kotlin / Jetpack Compose 手机客户端。通过带 SHA-256 主机指纹校验的 SSH 连接服务器上的 `codex app-server daemon` / `proxy`，复用服务器的模型提供方、URL、API Key 与聊天历史。手机中不包含模型提供方的 Key，也不需要 ChatGPT App 登录。
+
+当前已验证版本为 **0.2.7**。项目源码备份与正式安装包保存在本仓库及 [Releases](https://github.com/jinshenganyuci/codex-cli-app/releases)；恢复方式见 [备份与恢复](docs/BACKUP.md)，参考资料位置见 [界面参考说明](docs/APK_REFERENCE.md)。
 
 ## 使用
 

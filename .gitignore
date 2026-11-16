@@ -1,7 +1,37 @@
+# Generated build and IDE state
 .gradle/
 **/build/
 local.properties
+.idea/
+*.iml
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Local task files, reference media, and device data
+/work/
+/outputs/
+.codex-attachments/
+*.apk
+*.apks
+*.aab
+*.mp4
+*.mov
+*.log
+
+# Credentials and signing material
+.env
+.env.*
+!.env.example
 *.jks
 *.p12
+*.pfx
 *.pem
 *.key
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials.local.*
+auth.local.*
