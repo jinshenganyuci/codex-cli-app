@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".PreviewActivity" android:exported="true" android:windowSoftInputMode="adjustResize"/>
+        <activity android:name=".BootstrapActivity" android:exported="true"/>
+        <activity android:name=".ImageChecksActivity" android:exported="true"/>
+        <activity android:name=".ComposerChecksActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize"/>
+        <activity android:name=".UpdateChecksActivity" android:exported="true" android:launchMode="singleTop"/>
+    </application>
+</manifest>
