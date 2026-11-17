@@ -1,0 +1,14 @@
+Codex 0.2.11 (versionCode 14) — 2026-11-16
+
+Changes
+- Replace an unfinished older invitation when installing a package with a new invitation.
+- Keep the same device key on same-invitation retries and preserve established connections.
+- Accept the same invitation identifier format as the server, including leading underscore/dash.
+
+Build and verification
+- Debian release-01: signed Release builds and lint passed (171.409 seconds).
+- OnePlus 7 Pro GM1910, Android 16 / ARM64: isolated QA instrumentation passed eight state-migration scenarios using real Android Keystore and SharedPreferences.
+- Ordinary private update APK published through scripts/publish-release.py; public SSH route verified versionCode, size and SHA-256.
+
+Scope
+Invitation migration was tested with isolated QA state. Personal invitation packages and device deployment records are not public release assets; ordinary updates contain no invitation.

@@ -91,15 +91,19 @@ class CodexRepository : CoreContract {
         return AutoCloseable { listeners -= listener }
     }
 
-    override fun connect(profile: ConnectionProfile, credential: SshCredential): CompletableFuture<JSONObject> {
+    override fun connect(profile: ConnectionProfile, credential: SshCredential): CompletableFuture<JSONObject> =
+        connect(profile, credential, resetSession = false)
+
+    /** Different saved keys can route the same SSH login to different chat spaces. */
+    fun connect(profile: ConnectionProfile, credential: SshCredential, resetSession: Boolean): CompletableFuture<JSONObject> {
         // Copy before returning, so the credential vault may erase its decrypted arrays immediately.
         val secret = credential.copySecret()
         return task {
             if (disposed) { secret.close(); return@task failed(CodexException("连接器已关闭")) }
-            connecting?.takeIf { it.first == profile && !it.second.isDone }?.let {
+            connecting?.takeIf { !resetSession && it.first == profile && !it.second.isDone }?.let {
                 secret.close(); return@task it.second
             }
-            val sameHost = ComposerConnectionPolicy.sameOwner(this.profile, profile)
+            val sameHost = !resetSession && ComposerConnectionPolicy.sameOwner(this.profile, profile)
             this.profile = profile
             val token = ++epoch
             ++selection; ++listQuery; ++sectionsQuery
@@ -151,10 +155,16 @@ class CodexRepository : CoreContract {
         }
     }
 
-    override fun disconnect() = onMain {
+    override fun disconnect() = disconnect(clearSession = false)
+
+    fun disconnect(clearSession: Boolean) = onMain {
         connecting = null
         ++epoch; ++selection; ++listQuery; ++sectionsQuery; transport.disconnect()
-        publish(state.copy(connection = state.connection.copy(status = ConnectionStatus.DISCONNECTED, message = "连接已关闭"),
+        if (clearSession) {
+            profile = null
+            hiddenAsync.clear(); unsubmittedDrafts.clear(); threadMetadataRevisions.clear(); receiptQueries.clear(); sectionOrderQueries.clear()
+            publish(RepositoryState(connection = state.connection.copy(status = ConnectionStatus.DISCONNECTED, message = "连接已关闭")))
+        } else publish(state.copy(connection = state.connection.copy(status = ConnectionStatus.DISCONNECTED, message = "连接已关闭"),
             pendingRequests = emptyList(), selectedThreadReady = false, loadingThread = false, loadingThreads = false, loadingSections = false, sending = false))
     }
 
@@ -380,7 +390,7 @@ class CodexRepository : CoreContract {
         }
         val clientId = UUID.randomUUID().toString()
         val params = jsonObject("threadId" to threadId, "clientUserMessageId" to clientId, "input" to jsonArray(input))
-        applyOptions(params, options)
+        TurnOptionPayload.apply(params, options, state)
         val selected = selection
         publish(state.copy(sending = true, lastError = null))
         // Submission may succeed even if its reply is lost. Never recreate/replay this draft after it.
@@ -392,25 +402,6 @@ class CodexRepository : CoreContract {
             }
             result
         }.whenComplete { _, _ -> if (selected == selection) publish(state.copy(sending = false)) }
-    }
-
-    private fun applyOptions(params: JSONObject, options: TurnOptions) {
-        require(options.permissions == null || options.sandboxPolicy == null) { "不能同时设置权限配置和沙箱策略" }
-        params.putIfNotNull("model", options.model).putIfNotNull("effort", options.effort)
-            .putIfNotNull("cwd", options.cwd).putIfNotNull("approvalPolicy", options.approvalPolicy)
-            .putIfNotNull("approvalsReviewer", options.approvalsReviewer).putIfNotNull("sandboxPolicy", options.sandboxPolicy)
-            .putIfNotNull("permissions", options.permissions).putIfNotNull("serviceTier", options.serviceTier)
-        options.collaborationMode?.let { mode ->
-            require(mode in listOf("default", "plan"))
-            val model = options.model ?: state.threadSettings?.stringOrNull("model") ?: state.selectedThread?.model
-                ?: state.models.firstOrNull { it.isDefault }?.model
-                ?: state.config?.optJSONObject("config")?.stringOrNull("model")
-                ?: throw CodexException("无法确定当前模型，请先选择模型")
-            params.put("collaborationMode", jsonObject("mode" to mode, "settings" to jsonObject(
-                "model" to model, "reasoning_effort" to (options.effort ?: state.threadSettings?.stringOrNull("effort")
-                    ?: state.threadSettings?.stringOrNull("reasoningEffort")),
-                "developer_instructions" to null)))
-        }
     }
 
     override fun steer(text: String): CompletableFuture<JSONObject> = task {
@@ -646,24 +637,167 @@ class CodexRepository : CoreContract {
         }
     }
 
-    /** Native hard delete only. The caller owns explicit user confirmation for this thread ID. */
-    fun deleteThread(threadId: String): CompletableFuture<JSONObject> = task {
+    /** Read the complete dependency set before asking the user to confirm a destructive scope. */
+    fun prepareThreadDeletion(threadId: String): CompletableFuture<ThreadDeletionPlan> = deletionTask {
+        requireThreadDeletion(threadId)
+        prepareThreadDeletion(threadId, epoch)
+    }
+
+    /** Preserve the old single-target contract: this overload never silently deletes other forks. */
+    fun deleteThread(threadId: String): CompletableFuture<JSONObject> = deletionTask {
+        requireThreadDeletion(threadId)
+        deleteNativeThread(threadId, epoch)
+    }
+
+    /** Only IDs shown in the confirmed plan may be explicitly deleted. Recheck before the first RPC. */
+    fun deleteThread(plan: ThreadDeletionPlan): CompletableFuture<JSONObject> = deletionTask {
+        requireThreadDeletion(plan.rootId)
+        requireDeletionConnection(plan.generation)
+        val confirmed = plan.threads.map { it.id }.toSet()
+        if (confirmed.isEmpty() || confirmed.size != plan.threads.size || plan.rootId !in confirmed)
+            return@deletionTask failed(CodexException("删除范围无效，请重新打开确认窗口"))
+        prepareThreadDeletion(plan.rootId, plan.generation).thenCompose { current ->
+            if (current.threads.map { it.id }.toSet() != confirmed)
+                return@thenCompose failed<JSONObject>(CodexException("关联聊天已发生变化，请重新打开删除窗口确认"))
+            var deleted = 0
+            var sequence = CompletableFuture.completedFuture(JSONObject())
+            current.threads.forEach { thread ->
+                sequence = sequence.thenCompose {
+                    requireDeletionConnection(plan.generation)
+                    if (thread.id in state.deletedThreadIds) CompletableFuture.completedFuture(JSONObject())
+                    else deleteNativeThread(thread.id, plan.generation).thenApply { result -> deleted++; result }
+                }
+            }
+            sequence.handle { _, error ->
+                if (error != null) {
+                    val reason = deletionError(unwrap(error))
+                    throw CompletionException(CodexException(if (deleted == 0) reason
+                        else "已删除 $deleted 条聊天，其余已停止删除。$reason"))
+                }
+                jsonObject("deletedThreadIds" to jsonArray(current.threads.map { it.id }))
+            }
+        }
+    }
+
+    private fun requireThreadDeletion(threadId: String) {
         checkedId(threadId)
-        if (!state.connected) return@task failed(CodexException("请先连接服务器"))
-        if (state.threadDeletionSupported != true)
-            return@task failed(CodexException("此服务器版本尚未确认支持永久删除聊天"))
-        if (threadId in state.deletedThreadIds) return@task failed(CodexException("此聊天已永久删除"))
-        val token = epoch
-        rpc("thread/delete", jsonObject("threadId" to threadId), token, false).handle { result, error ->
+        if (!state.connected) throw CodexException("请先连接服务器")
+        if (state.threadDeletionSupported != true) throw CodexException("此服务器版本尚未确认支持永久删除聊天")
+        if (threadId in state.deletedThreadIds) throw CodexException("此聊天已永久删除")
+    }
+
+    private fun requireDeletionConnection(token: Long) {
+        if (disposed || token != epoch || !state.connected || !transport.isOpen)
+            throw CodexException("连接已改变，已停止删除，请重新确认")
+    }
+
+    private fun <T> deletionTask(block: () -> CompletableFuture<T>): CompletableFuture<T> = task {
+        // The confirmation dialog owns these failures; do not also show a chat-wide snackbar.
+        try { block() } catch (error: Exception) { failed(error) }
+    }
+
+    private fun deleteNativeThread(threadId: String, token: Long): CompletableFuture<JSONObject> {
+        requireDeletionConnection(token)
+        return rpc("thread/delete", jsonObject("threadId" to threadId), token, false).handle { result, error ->
             if (error != null) {
                 val cause = unwrap(error)
                 val unsupported = (cause as? CodexException)?.code == -32601
-                val message = if (unsupported) "此服务器不支持永久删除聊天" else safeError(cause)
-                if (token == epoch) publish(state.copy(threadDeletionSupported = if (unsupported) false else state.threadDeletionSupported,
-                    lastError = message))
-                throw CompletionException(if (unsupported) CodexException(message, -32601) else cause)
+                if (unsupported && token == epoch) publish(state.copy(threadDeletionSupported = false))
+                throw CompletionException(CodexException(deletionError(cause), (cause as? CodexException)?.code))
             }
             applyThreadMetadata("thread/deleted", jsonObject("threadId" to threadId))
+            result
+        }
+    }
+
+    private fun deletionError(error: Throwable): String {
+        val cause = unwrap(error)
+        if ((cause as? CodexException)?.code == -32601) return "此服务器不支持永久删除聊天"
+        val message = safeError(cause)
+        return if (message.contains("forked history still references it", ignoreCase = true))
+            "仍有其他分叉聊天引用这段历史，服务器已保留它。请重新读取关联聊天后再确认删除。"
+        else message
+    }
+
+    private fun prepareThreadDeletion(threadId: String, token: Long): CompletableFuture<ThreadDeletionPlan> {
+        val threads = linkedMapOf<String, ThreadSummary>()
+        val hydrated = mutableSetOf<String>()
+        val inspectedAttached = mutableSetOf<String>()
+        var requestCount = 0
+        fun read(method: String, params: JSONObject): CompletableFuture<JSONObject> {
+            requireDeletionConnection(token)
+            if (++requestCount > 12_000) throw CodexException("关联聊天过多，无法完整确认删除范围；未执行删除")
+            return rpc(method, params, token, false)
+        }
+        fun add(raw: JSONObject) {
+            val id = raw.stringOrNull("id") ?: throw CodexException("服务器返回了不完整的聊天列表；未执行删除")
+            checkedId(id)
+            if (id !in hydrated) threads[id] = ProtocolParser.thread(raw)
+            if (threads.size > 10_000) throw CodexException("聊天数量过多，无法完整确认删除范围；未执行删除")
+        }
+        fun list(archived: Boolean, attachedTo: String?): CompletableFuture<Unit> {
+            val cursors = mutableSetOf<String>()
+            var pages = 0
+            fun page(cursor: String?): CompletableFuture<Unit> {
+                if (++pages > 100) throw CodexException("聊天分页过多，无法完整确认删除范围；未执行删除")
+                val params = jsonObject("limit" to 100, "archived" to archived,
+                    "modelProviders" to JSONArray(), "sourceKinds" to jsonArray(DELETION_SOURCE_KINDS))
+                if (cursor != null) params.put("cursor", cursor)
+                if (attachedTo != null) params.put("attachedToThreadId", attachedTo)
+                return read("thread/list", params).thenCompose { result ->
+                    val rows = result.optJSONArray("data") ?: throw CodexException("服务器返回了不完整的聊天列表；未执行删除")
+                    for (index in 0 until rows.length()) {
+                        val raw = rows.optJSONObject(index) ?: throw CodexException("服务器返回了无效的聊天记录；未执行删除")
+                        if (attachedTo != null && raw.stringOrNull("attachedToThreadId") != attachedTo)
+                            throw CodexException("服务器未正确返回附属聊天；未执行删除")
+                        add(raw)
+                    }
+                    val next = result.stringOrNull("nextCursor")
+                    if (next == null) CompletableFuture.completedFuture(Unit)
+                    else {
+                        if (!cursors.add(next)) throw CodexException("聊天分页重复，无法完整确认删除范围；未执行删除")
+                        page(next)
+                    }
+                }
+            }
+            return page(null)
+        }
+        fun hydrateMissing(): CompletableFuture<Unit> {
+            val ids = threads.keys.filterNot { it in hydrated }
+            fun batch(offset: Int): CompletableFuture<Unit> {
+                if (offset >= ids.size) return CompletableFuture.completedFuture(Unit)
+                val end = minOf(offset + 4, ids.size)
+                val pending = ids.subList(offset, end).map { id ->
+                    read("thread/read", jsonObject("threadId" to id, "includeTurns" to false)).thenApply { result ->
+                        val raw = result.optJSONObject("thread") ?: throw CodexException("无法读取聊天关系；未执行删除")
+                        if (raw.stringOrNull("id") != id) throw CodexException("服务器返回的聊天标识不匹配；未执行删除")
+                        // 0.169.0 thread/list intentionally sets forkedFromId=null. Only
+                        // metadata-only thread/read reconstructs the persisted fork lineage.
+                        threads[id] = ProtocolParser.thread(raw)
+                        hydrated += id
+                        Unit
+                    }
+                }
+                return CompletableFuture.allOf(*pending.toTypedArray()).thenCompose { batch(end) }
+            }
+            return batch(0)
+        }
+        fun completeClosure(): CompletableFuture<ThreadDeletionPlan> = hydrateMissing().thenCompose {
+            val affected = ThreadDeletionGraph.affectedIds(threadId, threads)
+            val unchecked = affected.firstOrNull { it !in inspectedAttached }
+            if (unchecked == null) CompletableFuture.completedFuture(
+                ThreadDeletionPlan(threadId, ThreadDeletionGraph.ordered(threadId, threads), token))
+            else {
+                inspectedAttached += unchecked
+                list(false, unchecked).thenCompose { list(true, unchecked) }.thenCompose { completeClosure() }
+            }
+        }
+        return list(false, null).thenCompose { list(true, null) }.thenCompose {
+            if (threadId !in threads) threads[threadId] = ThreadSummary(threadId, "", "", "", 0, "notLoaded", null, null, null,
+                jsonObject("id" to threadId))
+            completeClosure()
+        }.handle { result, error ->
+            if (error != null) throw CompletionException(CodexException("无法完整读取关联聊天，未执行删除。${deletionError(unwrap(error))}"))
             result
         }
     }
@@ -675,17 +809,13 @@ class CodexRepository : CoreContract {
     }
 
     override fun approvalDecisions(request: PendingRequest): List<Any> {
-        val available = request.params.optJSONArray("availableDecisions")
-        if (available != null) return (0 until available.length()).map { available.get(it) }
-        if (request.method == "execCommandApproval" || request.method == "applyPatchApproval") return listOf("approved", "approved_for_session", "denied")
-        return if (request.kind in listOf(RequestKind.COMMAND_APPROVAL, RequestKind.FILE_APPROVAL, RequestKind.PERMISSIONS_APPROVAL))
-            if (request.params.optString("kind") == "humanCommand") listOf("accept", "decline", "cancel")
-            else listOf("accept", "acceptForSession", "decline", "cancel") else emptyList()
+        return approvalDecisionsFor(request.method, request.params)
     }
 
     override fun approve(requestKey: String, decision: Any): CompletableFuture<Unit> = task {
         val pending = requirePending(requestKey)
-        if (approvalDecisions(pending).none { jsonEqual(it, decision) }) return@task failed(CodexException("此审批不允许该决定"))
+        if (!isApprovalDecisionAllowed(pending.method, pending.params, decision))
+            return@task failed(CodexException("此审批不允许该决定"))
         val result = if (pending.kind == RequestKind.PERMISSIONS_APPROVAL) {
             jsonObject("permissions" to (if (decision == "accept" || decision == "acceptForSession")
                 pending.params.optJSONObject("permissions") ?: JSONObject() else JSONObject()),
@@ -724,6 +854,13 @@ class CodexRepository : CoreContract {
 
     override fun answer(requestKey: String, result: JSONObject): CompletableFuture<Unit> = task {
         val pending = requirePending(requestKey)
+        when (pending.kind) {
+            RequestKind.COMMAND_APPROVAL, RequestKind.FILE_APPROVAL ->
+                if (!isApprovalDecisionAllowed(pending.method, pending.params, result.opt("decision")))
+                    return@task failed(CodexException("此审批不允许该决定"))
+            RequestKind.PERMISSIONS_APPROVAL -> validatePermissionReply(pending.params, result)
+            else -> Unit
+        }
         val token = epoch
         publish(state.copy(pendingRequests = state.pendingRequests.map { if (it.key == requestKey) it.copy(submitting = true) else it }))
         mainFuture(transport.response(pending.rpcId, result), token).whenComplete { _, error ->
@@ -754,14 +891,14 @@ class CodexRepository : CoreContract {
 
     override fun dismissAsync(questionKey: String) = onMain { hiddenAsync += questionKey; publish(state) }
 
-    override fun implementPlan(planItemId: String): CompletableFuture<JSONObject> = task {
+    override fun implementPlan(planItemId: String, options: TurnOptions): CompletableFuture<JSONObject> = task {
         validatePlan(planItemId)
-        sendMessage("Implement the proposed plan.", options = TurnOptions(collaborationMode = "default"))
+        sendMessage("Implement the proposed plan.", options = TurnOptionPayload.forPlan(options, "default"))
     }
-    override fun revisePlan(planItemId: String, feedback: String): CompletableFuture<JSONObject> = task {
+    override fun revisePlan(planItemId: String, feedback: String, options: TurnOptions): CompletableFuture<JSONObject> = task {
         validatePlan(planItemId)
         if (feedback.isBlank()) return@task failed(CodexException("请输入对计划的修改意见"))
-        sendMessage(feedback, options = TurnOptions(collaborationMode = "plan"))
+        sendMessage(feedback, options = TurnOptionPayload.forPlan(options, "plan"))
     }
     private fun validatePlan(id: String) {
         if (state.items.lastOrNull { it.type == "plan" }?.id != id) throw CodexException("该计划已失效")
@@ -851,6 +988,8 @@ class CodexRepository : CoreContract {
     override fun close() = onMain { if (!disposed) { disconnect(); disposed = true; transport.close(); listeners.clear() } }
 
     companion object {
+        private val DELETION_SOURCE_KINDS = listOf("cli", "vscode", "exec", "appServer", "subAgent",
+            "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown")
         private val THREAD_METADATA_EVENTS = setOf("thread/name/updated", "thread/section/changed", "thread/readState/changed", "thread/archived", "thread/unarchived", "thread/deleted")
         internal fun supportsNativeThreadDeletion(initialization: JSONObject): Boolean =
             initialization.optString("userAgent").substringBefore(' ').substringAfterLast('/') == "0.169.0"
@@ -876,6 +1015,14 @@ class CodexRepository : CoreContract {
             }
             if (a is JSONArray && b is JSONArray) return a.length() == b.length() && (0 until a.length()).all { jsonEqual(a.opt(it), b.opt(it)) }
             return a == b
+        }
+        private fun validatePermissionReply(params: JSONObject, result: JSONObject) {
+            if (result.opt("scope") !in listOf("turn", "session")) throw CodexException("权限回复范围无效")
+            val granted = result.optJSONObject("permissions") ?: throw CodexException("权限回复格式无效")
+            val requested = params.optJSONObject("permissions") ?: JSONObject()
+            // The UI can deny everything or grant requested categories; it cannot invent a wider grant.
+            if (granted.keys().asSequence().any { key -> !requested.has(key) || !jsonEqual(granted.opt(key), requested.opt(key)) })
+                throw CodexException("权限回复超出了本次请求范围")
         }
         private fun redactConfig(raw: JSONObject): JSONObject {
             fun clean(value: Any?): Any? = when (value) {

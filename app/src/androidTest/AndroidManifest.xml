@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation android:name="com.nanci.codexremote.test.InlineImageInstrumentation" android:targetPackage="com.nanci.codexremote" />
+</manifest>

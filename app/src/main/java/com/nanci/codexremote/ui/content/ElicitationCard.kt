@@ -17,6 +17,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
+import com.nanci.codexremote.ui.theme.NativeTypography
+import com.nanci.codexremote.ui.theme.NativeTheme
 import org.json.JSONObject
 import java.net.URI
 import java.time.LocalDate
@@ -95,28 +97,28 @@ fun ElicitationCard(params: JSONObject, enabled: Boolean = true, onReply: (JSONO
     }
     ContentCard(modifier) {
         Column(Modifier.heightIn(max=(LocalConfiguration.current.screenHeightDp*.72f).dp).verticalScroll(rememberScrollState())) {
-            Text("查看请求",fontSize=16.sp,lineHeight=24.sp,fontWeight=FontWeight.Medium,color=ContentInk)
+            Text("查看请求",style=NativeTypography.body16,fontWeight=FontWeight.Medium,color=ContentInk)
             val server=params.text("serverName")
-            if(server.isNotEmpty()) Text("$server 已请求此表单",Modifier.padding(top=4.dp),fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+            if(server.isNotEmpty()) Text("$server 已请求此表单",Modifier.padding(top=4.dp),style=NativeTypography.caption12,color=ContentMuted)
             val message=params.text("message",params.text("description"))
-            if(message.isNotBlank()) Text(message,Modifier.padding(top=8.dp),fontSize=14.sp,lineHeight=20.sp,color=ContentInk)
+            if(message.isNotBlank()) Text(message,Modifier.padding(top=8.dp),style=NativeTypography.body14,color=ContentInk)
             if(mode=="url") {
                 val url=params.text("url")
                 Text(url,Modifier.fillMaxWidth().clickable(enabled=enabled&&url.isNotBlank()){onOpenUrl(url)}.padding(vertical=12.dp),
-                    fontSize=14.sp,lineHeight=20.sp,color=ContentBlue)
-                Text("请在打开的页面完成操作后继续。",fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+                    style=NativeTypography.body14,color=ContentBlue)
+                Text("请在打开的页面完成操作后继续。",style=NativeTypography.caption12,color=ContentMuted)
             } else if(supported) {
                 fields.forEachIndexed { index,field ->
                     if(index>0) HorizontalDivider(Modifier.padding(vertical=8.dp),color=ContentBorder) else Spacer(Modifier.height(12.dp))
                     val label=field.title+if(field.required) " *" else ""
-                    if(field.type!="boolean") Text(label,fontSize=14.sp,lineHeight=20.sp,fontWeight=FontWeight.Medium,color=ContentInk)
+                    if(field.type!="boolean") Text(label,style=NativeTypography.body14,fontWeight=FontWeight.Medium,color=ContentInk)
                     val description=field.schema.text("description")
-                    if(description.isNotBlank()) Text(description,Modifier.padding(top=2.dp),fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+                    if(description.isNotBlank()) Text(description,Modifier.padding(top=2.dp),style=NativeTypography.caption12,color=ContentMuted)
                     when {
                         field.type=="boolean" -> Row(Modifier.fillMaxWidth().clickable(enabled=enabled){values[field.name]=values[field.name]!=true},verticalAlignment=Alignment.CenterVertically) {
                             Checkbox(checked=values[field.name]==true,onCheckedChange={values[field.name]=it},enabled=enabled,
                                 colors=CheckboxDefaults.colors(checkedColor=ContentInk,uncheckedColor=ContentMuted))
-                            Text(label,fontSize=14.sp,lineHeight=20.sp,color=ContentInk)
+                            Text(label,style=NativeTypography.body14,color=ContentInk)
                         }
                         field.options.isNotEmpty() -> field.options.forEach { option ->
                             val multiple=field.type=="array"
@@ -133,11 +135,11 @@ fun ElicitationCard(params: JSONObject, enabled: Boolean = true, onReply: (JSONO
                             secret=field.schema.text("format")=="password",number=field.type=="number"||field.type=="integer",
                             modifier=Modifier.padding(top=6.dp))
                     }
-                    errors[field.name]?.let {Text(it,Modifier.padding(top=4.dp),color=Color(0xFFBD2424),fontSize=12.sp,lineHeight=16.sp)}
+                    errors[field.name]?.let {Text(it,Modifier.padding(top=4.dp),color=NativeTheme.colors.danger,style=NativeTypography.caption12)}
                 }
             } else {
-                Text("当前版本的 Codex 暂时无法显示此请求。",Modifier.padding(vertical=12.dp),fontSize=14.sp,lineHeight=20.sp,color=ContentMuted)
-                Text("模式：$mode",fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+                Text("当前版本的 Codex 暂时无法显示此请求。",Modifier.padding(vertical=12.dp),style=NativeTypography.body14,color=ContentMuted)
+                Text("模式：$mode",style=NativeTypography.caption12,color=ContentMuted)
             }
             if(supported && persistModes.isNotEmpty()) {
                 HorizontalDivider(Modifier.padding(top=12.dp,bottom=4.dp),color=ContentBorder)
@@ -146,8 +148,8 @@ fun ElicitationCard(params: JSONObject, enabled: Boolean = true, onReply: (JSONO
                         horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically) {
                         ContentIcon("check",Modifier.size(16.dp))
                         Column {
-                            Text(if(persist=="session") "在本次会话中允许" else "始终允许",fontSize=14.sp,lineHeight=20.sp,color=ContentInk)
-                            Text(if(persist=="session") "在本次会话中记住此选择" else "记住此选择，用于后续请求",fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+                            Text(if(persist=="session") "在本次会话中允许" else "始终允许",style=NativeTypography.body14,color=ContentInk)
+                            Text(if(persist=="session") "在本次会话中记住此选择" else "记住此选择，用于后续请求",style=NativeTypography.caption12,color=ContentMuted)
                         }
                     }
                 }

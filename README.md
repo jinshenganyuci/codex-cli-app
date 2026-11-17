@@ -2,9 +2,11 @@
 
 原生 Kotlin / Jetpack Compose 手机客户端。通过带 SHA-256 主机指纹校验的 SSH 连接服务器上的 `codex app-server daemon` / `proxy`，复用服务器的模型提供方、URL、API Key 与聊天历史。手机中不包含模型提供方的 Key，也不需要 ChatGPT App 登录。
 
-私有通道已验证版本为 **0.2.9**；公开版 **0.2.10** 使用 GitHub Releases 更新。源码已同步 GitHub；每小时检查主分支的新版本，并由 [GitHub Actions](https://github.com/jinshenganyuci/codex-cli-app/actions) 自动构建并发布到 [Releases](https://github.com/jinshenganyuci/codex-cli-app/releases)。0.2.9 同时保留现有服务器在线更新通道和 Debian 验证产物。恢复方式见 [备份与恢复](docs/BACKUP.md)，参考资料位置见 [界面参考说明](docs/APK_REFERENCE.md)。
+当前源码版本为 **0.2.15 / code18**。公开 APK 由 [GitHub Actions](https://github.com/jinshenganyuci/codex-cli-app/actions) 每小时检查 `main`，发现新版本才自动构建并发布到 [Releases](https://github.com/jinshenganyuci/codex-cli-app/releases)；以 Releases 实际已发布版本为准。公开 APK 仅通过 GitHub 更新，不内置私人服务器地址或激活邀请。
 
 ## 使用
+
+支持连接你自己的云服务器或局域网电脑。填写的是 SSH 连接，不是模型 API / HTTP / WebSocket 地址；远端需先安装并配置兼容的 Codex CLI。完整步骤见 [连接自己的 Codex](docs/CONNECT_YOUR_CODEX.md)。
 
 在“Codex → 添加连接”或“设置”中添加服务器地址、SSH 用户和可信主机指纹，导入私钥或选择密码认证。SSH 凭据通过 Android Keystore AES-GCM 加密保存在应用私有数据中。服务器需要支持 `codex app-server daemon start` 和 `codex app-server proxy`；本轮使用 Codex CLI 0.169.0 验证。
 
@@ -34,6 +36,16 @@
 
 0.2.9 根据 ChatGPT Android 原生实现及录屏适配远程文件底部面板，展示加载、文件名、大小和路径。保存到手机下载目录后提供系统打开；流式下载不再受原先 8 MiB 预览限制。PDF/Word 不再显示乱码或空白全屏页，保留图片和文本预览，并修复带括号/空格的文件链接。原生依据见 [远程文件下载](docs/REMOTE_FILES.md)，目标机检查见 [0.2.9 验证记录](docs/releases/0.2.9-verification.txt)。
 
+0.2.11 修复旧邀请激活失败后换新包覆盖安装的恢复流程，保留同一邀请的设备密钥及已有连接。私有安装包按设备分别签发邀请，普通在线更新不携带邀请。详见 [0.2.11 验证记录](docs/releases/0.2.11-verification.txt)。
+
+0.2.12 在永久删除前识别包含已归档分叉的关联聊天，明确列出受影响范围，确认后按依赖顺序调用服务器原生删除；范围变化或失败时停止。原因与原生证据见 [分叉历史与永久删除](docs/FORK_DELETE.md)。本次仅构建、签名及发布文件校验，按用户要求未执行功能测试。
+
+0.2.13 默认使用 GPT-6.1 Terra / 极高，升级首次强制应用一次；此后按设备和连接保存用户选择，打开旧聊天不覆盖新聊天默认，相同地址的不同连接也不复用聊天缓存。行为说明见 [模型默认值](docs/MODEL_DEFAULTS.md)，当前全部模型窗口与官方证据见 [模型上下文](docs/MODEL_CONTEXT.md)。
+
+0.2.15 修复审计确认的14项问题，并按已核验的 Android 原生参数统一字体、菜单、图标、阴影及深色/高对比主题；图片同路径更新、原图与复制导出不再沿用旧缓存。最终真机与发布记录见 [0.2.15 验证记录](docs/releases/0.2.15-release.txt)。
+
+0.2.14 将正文中的 Markdown 图片接到原生图片组件，SVG 和 PNG 可直接显示在聊天里，并点击放大。支持绝对路径、聊天工作目录下的相对路径及 data URI；普通文件链接继续保持下载/打开语义，代码示例不会触发图片读取。SVG 使用独立矢量解码，原始 SVG 保存保留原文件，复制图片可导出 PNG；缓存按连接隔离。原生依据及边界见 [聊天图片](docs/INLINE_IMAGES.md)，实机记录见 [0.2.14 验证记录](docs/releases/0.2.14-release.txt)。
+
 ## 已实现的交互类型
 
 - 命令、文件和额外权限审批，以及旧协议审批兼容。
@@ -55,9 +67,11 @@ Markdown 为本地原生解析的常用子集；差异视图支持文件分组�
 
 按当前用户环境规范，在 Debian 编译机执行 `scripts/build.sh`。脚本支持被 BuildLab 作业复制执行，使用作业的实际工作目录定位项目。默认构建 Release；`scripts/debug-build.sh` 构建 Debug。签名由环境变量与 Debian 受限签名文件提供，不进入源码。
 
+自行构建若需使用本仓库 GitHub 更新源，必须设置 `CODEX_MOBILE_PUBLIC_RELEASE=1`；不设置时为 SSH 更新通道，读取的是自己配置的 SSH 服务器。自签名 APK 与仓库正式签名不同，不能承诺覆盖安装或接收本仓库签名的 APK 更新，建议普通用户直接使用 Releases。
+
 `app/src/debug` 中的组件预览、输入法/滚动检查、实际图片检查与一次性私有目录凭据导入 Activity 仅供开发测试，Release 不包含这些 Activity。图片检查的原始素材由测试时写入应用私有目录，不打包进 APK。正常用户通过设置页导入连接，不依赖 Debug 入口。
 
-真实升级测试可在 Debian 以 `CODEX_MOBILE_TEST_BASE=1` 构建 Debug variant，其实际安装版本号为 7、名称为 `0.2.5-update-test`；当前源码默认 Release 使用版本号 13（0.2.10）。首装激活验证使用独立测试邀请和 `CODEX_MOBILE_BOOTSTRAP_TEST_BASE=1`，生成 code10 的 `0.2.8-invite-test` Release 基包，避免为测试降级已有手机。两类测试包均严禁发布。更新判断使用 PackageManager 的实际安装版本，不依赖测试 variant 的 BuildConfig 常量。
+真实升级测试可在 Debian 以 `CODEX_MOBILE_TEST_BASE=1` 构建 Debug variant，其实际安装版本号为 7、名称为 `0.2.5-update-test`；当前源码默认 Release 使用版本号 18（0.2.15）。首装激活验证使用独立测试邀请和 `CODEX_MOBILE_BOOTSTRAP_TEST_BASE=1`，生成 code10 的 `0.2.8-invite-test` Release 基包，避免为测试降级已有手机。两类测试包均严禁发布。更新判断使用 PackageManager 的实际安装版本，不依赖测试 variant 的 BuildConfig 常量。
 
 正式发布在 Debian 使用 `scripts/publish-release.py --help` 所列参数，提供已验证的正式 APK、上一正式版作为签名基线、可信 SSH 主机密钥文件以及版本说明。工具先校验包身份、签名和版本，拒绝可调试/测试包，再上传并校验，最后原子更新版本索引。认证通过任务专用 SSH agent 转发，不复制或长期保存私钥。仅在用户要求交付正式更新时执行发布。
 

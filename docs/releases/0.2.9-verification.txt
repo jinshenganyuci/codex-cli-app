@@ -15,8 +15,8 @@ Codex Android 0.2.9 — 文件下载适配验证（2026-11-16）
 - 未调试、无专用激活asset；测试runner只在独立test APK中。该正式APK已从Debian发布到现有SSH/SFTP更新目录，原子更新latest.json，保留0.2.8。
 
 USB目标机与实际结果
-- 一加7 Pro / GM1910 / guacamole，Android16，ARM64；USB序列22dcef5b，1440x3120、density560、fontScale1.0。
-- 以adb install -r覆盖0.2.8，无清数据/卸载正式应用。现有连接偏好摘要、当前Android用户0及微信Bot进程均与操作前一致。
+- 一加7 Pro / GM1910 / guacamole，Android16，ARM64；1440x3120、density560、fontScale1.0。
+- 以adb install -r覆盖0.2.8，无清数据/卸载正式应用。现有连接偏好摘要、当前Android用户0及其他常驻应用进程均与操作前一致。
 - FileDownloadInstrumentation在正式APK上连接实际Codex服务器，读取本任务独立fixture，无修改聊天或连接。
 - 6类fixture：PDF、DOCX、UTF-8文本、空文件、40MiB二进制、无扩展名PNG。全部流式下载SHA/大小一致、进度单调；40MiB证明不再受8/32MiB读取上限限制。
 - PDF/DOCX保持不支持预览的正文、真实MIME和元数据，MediaStore保存后重新读取SHA一致；重复点击只保存一次；成功关闭当前面板，重开恢复已保存URI。
@@ -35,7 +35,7 @@ USB目标机与实际结果
 - 本次未重新验证所有聊天功能和其他安卓设备，也未向GitHub推送新源码/Release。
 
 永久证据
-/srv/buildlab/artifacts/codex-mobile/20261116-file-download/
+Debian受控产物区相对归档标识：codex-mobile/20261116-file-download/；实际根目录见本机私有work/local-environment.md，不随源码提交。
   release/Codex-0.2.9.apk
   binary-audit.json
   evidence/：定向解包、原生行为索引与参考录屏

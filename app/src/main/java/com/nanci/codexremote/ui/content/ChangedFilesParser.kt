@@ -53,9 +53,19 @@ fun parseChangedFiles(patch: String, scope: ChangedFilesScope = ChangedFilesScop
 }
 
 private val hunkHeader = Regex("^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@(.*)$")
-private fun parseChangedFile(index: Int, lines: List<String>): ChangedFile? {
-    var oldPath: String? = null
-    var path: String? = null
+/** Per-item patches can contain only hunks; their file identity comes from changes[].path. */
+fun parseChangedFilePatch(path: String, patch: String): ChangedFile {
+    val lines = patch.split('\n').let { if (it.lastOrNull() == "") it.dropLast(1) else it }
+    val identity = path.ifBlank { "未指定文件" }
+    return parseChangedFile(0, lines, identity) ?: ChangedFile(
+        "0:$identity", identity, null, "修改", lines.map { ChangedLine(ChangedLineKind.Metadata, it) },
+        0, 0, false, patch,
+    )
+}
+
+private fun parseChangedFile(index: Int, lines: List<String>, fallbackPath: String? = null): ChangedFile? {
+    var oldPath: String? = fallbackPath
+    var path: String? = fallbackPath
     lines.firstOrNull()?.takeIf { it.startsWith("diff --git ") }?.let {
         val value = it.removePrefix("diff --git ")
         val tokens = gitPathTokens(value)
@@ -81,8 +91,8 @@ private fun parseChangedFile(index: Int, lines: List<String>): ChangedFile? {
             if (inHunk && (oldRemaining != 0 || newRemaining != 0)) countsKnown = false
             oldLine = hunk.groupValues[1].toIntOrNull() ?: return null
             newLine = hunk.groupValues[3].toIntOrNull() ?: return null
-            oldRemaining = hunk.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 1
-            newRemaining = hunk.groupValues[4].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 1
+            oldRemaining = if(hunk.groupValues[2].isEmpty()) 1 else hunk.groupValues[2].toIntOrNull() ?: return null
+            newRemaining = if(hunk.groupValues[4].isEmpty()) 1 else hunk.groupValues[4].toIntOrNull() ?: return null
             val unchanged = minOf((oldLine - previousOldEnd - 1).coerceAtLeast(0), (newLine - previousNewEnd - 1).coerceAtLeast(0))
             if (unchanged > 0) rows += ChangedLine(ChangedLineKind.Separator, "$unchanged 行未更改")
             val section = hunk.groupValues[5].trim()

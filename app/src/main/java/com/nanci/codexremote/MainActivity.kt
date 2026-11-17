@@ -26,6 +26,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.nanci.codexremote.ui.theme.*
 import com.nanci.codexremote.connection.*
 import com.nanci.codexremote.core.*
 import com.nanci.codexremote.ui.content.*
@@ -51,9 +56,7 @@ class MainActivity : ComponentActivity() {
             val updates:UpdateCoordinator=viewModel()
             val currentConnection by rememberUpdatedState(vm.activeConnection)
             LaunchedEffect(vm.activeConnection) { updates.onConnectionAvailable(vm.activeConnection) }
-            MaterialTheme(colorScheme=lightColorScheme(primary=Color(0xFF0D0D0D),onPrimary=Color.White,
-                secondary=Color(0xFF5D5D5D),background=Color(0xFFFAFAFA),surface=Color.White,
-                onSurface=Color(0xFF0D0D0D),surfaceVariant=Color(0xFFF3F3F3))) {
+            NativeAppTheme() {
                 RemoteApp(vm)
                 UpdateUi(updates)
             }
@@ -83,6 +86,8 @@ private fun RemoteApp(vm:RemoteViewModel) {
     }.getOrDefault(BuildConfig.VERSION_NAME)}
     val keyboard=LocalSoftwareKeyboardController.current
     val state=vm.state
+    val density=LocalDensity.current
+    var chromeHeight by remember {mutableStateOf(72.dp)}
     var latestRequest by remember(state.selectedThread?.id) { mutableIntStateOf(0) }
     var route by remember { mutableStateOf("home") }
     var editing by remember { mutableStateOf<SavedConnection?>(null) }
@@ -107,11 +112,21 @@ private fun RemoteApp(vm:RemoteViewModel) {
             ThreadActionTarget(id,it.title.ifBlank {it.preview.ifBlank {"新聊天"}},imageOwner)
         }
     }
-    // A reconnect keeps the same image owner and cached previews. Replacing the
-    // loader for each transport state resets every visible image to a placeholder.
-    val imageLoader=remember(imageOwner) {vm.images.scoped(imageOwner)}
+    // Revalidate mutable remote paths on foreground and completed turns, without
+    // rebuilding the loader for every streamed text token or transport notification.
+    var imageRefresh by remember(imageOwner,state.selectedThread?.id) {mutableLongStateOf(0L)}
+    val lifecycleOwner=LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner,imageOwner,state.selectedThread?.id) {
+        val observer=androidx.lifecycle.LifecycleEventObserver {_,event ->
+            if(event==androidx.lifecycle.Lifecycle.Event.ON_RESUME)imageRefresh++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {lifecycleOwner.lifecycle.removeObserver(observer)}
+    }
+    val completedImageTurn=state.turns.lastOrNull {it.status!="inProgress"}?.let {it.id to it.status}
+    val imageLoader=remember(imageOwner,state.selectedThread?.id,completedImageTurn,imageRefresh) {vm.images.scoped(imageOwner)}
     LaunchedEffect(imageOwner,state.selectedThread?.id) {openedImage=null}
-    LaunchedEffect(imageOwner) {removeProject=null}
+    LaunchedEffect(imageOwner) {removeProject=null;workspaceOpen=false;planText=null}
     LaunchedEffect(imageOwner,state.connected,state.connection.generation) {rename=null;archive=null;delete=null;newSection=null}
     LaunchedEffect(state.deletedThreadIds) {
         if(state.selectedThread==null)planText=null
@@ -124,10 +139,12 @@ private fun RemoteApp(vm:RemoteViewModel) {
     val snack=remember { SnackbarHostState() }
     val copy:(String)->Unit={ text -> (context.getSystemService(ClipboardManager::class.java)).setPrimaryClip(ClipData.newPlainText("Codex",text)) }
     val openLink:(String)->Unit={ link ->
-        if(link.startsWith("data:image/",true))openImage(ImageSource(ImageSourceKind.DataUri,link,cacheKey="link:${System.identityHashCode(link)}"))
-        else if(link.startsWith('/') && link.substringAfterLast('.').lowercase() in setOf("png","jpg","jpeg","webp","gif","heic","heif","bmp","avif","wbmp"))
-            openImage(ImageSource(ImageSourceKind.RemotePath,link,cacheKey=link))
-        else if(link.startsWith('/'))vm.files.open(link)
+        val source=resolveMarkdownImageSource(link,"link:${System.identityHashCode(link)}",state.selectedThread?.cwd ?: vm.workspace)
+        val imagePath=source?.let { if(it.kind==ImageSourceKind.HttpUrl) Uri.parse(it.value).path.orEmpty() else it.value }.orEmpty()
+        val isImage=source?.kind==ImageSourceKind.DataUri || imagePath.substringAfterLast('.',"").lowercase() in
+            setOf("svg","png","jpg","jpeg","webp","gif","heic","heif","bmp","avif","wbmp")
+        if(source!=null && isImage)openImage(source)
+        else if(source?.kind==ImageSourceKind.RemotePath)vm.files.open(source.value)
         else runCatching { val uri=Uri.parse(link); require(uri.scheme in listOf("https","http","mailto")); context.startActivity(Intent(Intent.ACTION_VIEW,uri)) }
                 .onFailure { vm.message="无法打开此链接" }
     }
@@ -144,16 +161,17 @@ private fun RemoteApp(vm:RemoteViewModel) {
         val export=vm.imageExport;vm.imageExport=null
         if(uri!=null && export!=null)vm.saveImage(uri,export.second,export.first)
     }
-    val filePicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> uris.forEach(vm::attach) }
-    val photoPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> uris.forEach(vm::attach) }
+    val filePicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if(attachmentOwner=="${vm.imageOwner()}:${vm.state.selectedThread?.id}")uris.forEach(vm::attach) }
+    val photoPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> if(attachmentOwner=="${vm.imageOwner()}:${vm.state.selectedThread?.id}")uris.forEach(vm::attach) }
     val camera=rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-        if(ok && attachmentOwner=="${vm.activeConnection?.id}:${state.selectedThread?.id}")cameraUriString?.let {vm.attach(Uri.parse(it))}
+        if(ok && attachmentOwner=="${vm.imageOwner()}:${vm.state.selectedThread?.id}")cameraUriString?.let {vm.attach(Uri.parse(it))}
     }
     val attach:(AttachmentAction)->Unit={ type ->
+        attachmentOwner="${vm.imageOwner()}:${vm.state.selectedThread?.id}"
         try { when(type) {
             AttachmentAction.Files->filePicker.launch(arrayOf("*/*"))
             AttachmentAction.Photos->photoPicker.launch("image/*")
-            AttachmentAction.Camera->{ val file=File(context.cacheDir,"camera/photo-${System.currentTimeMillis()}.jpg");file.parentFile?.mkdirs();val uri=FileProvider.getUriForFile(context,"${context.packageName}.files",file);cameraUriString=uri.toString();attachmentOwner="${vm.activeConnection?.id}:${state.selectedThread?.id}";camera.launch(uri) }
+            AttachmentAction.Camera->{ val file=File(context.cacheDir,"camera/photo-${System.currentTimeMillis()}.jpg");file.parentFile?.mkdirs();val uri=FileProvider.getUriForFile(context,"${context.packageName}.files",file);cameraUriString=uri.toString();attachmentOwner="${vm.imageOwner()}:${vm.state.selectedThread?.id}";camera.launch(uri) }
         } } catch(e:Exception) { vm.message="无法打开附件选择器" }
     }
     LaunchedEffect(vm.message) { vm.message?.let { text -> snack.showSnackbar(text);if(vm.message==text)vm.message=null } }
@@ -231,14 +249,16 @@ private fun RemoteApp(vm:RemoteViewModel) {
         supportsFast=state.models.firstOrNull {it.model==vm.model}?.raw?.optJSONArray("additionalSpeedTiers")?.let { a->(0 until a.length()).any {a.optString(it)=="fast"} }==true,fast=vm.fast)
     val composerActions=ComposerActions(onTextChange=vm::changeDraft,onSend={latestRequest++;keyboard?.hide();vm.send()},
         onStop={vm.observe(vm.repo.interrupt())},onPlanMode={vm.planMode=it},onPermission={ if(it==ShellPermission.FullAccess)fullAccess=true else vm.selectPermission(it) },
-        onModel={vm.model=it;vm.effort=state.models.firstOrNull { m->m.model==it }?.defaultEffort.orEmpty()},onReasoning={vm.effort=it},
+        onModel=vm::selectModel,onReasoning=vm::selectEffort,
         onAttachment=attach,onRemoveAttachment=vm::removeAttachment,onFast={vm.fast=it},
         onFocusRequestHandled={request->if(vm.focusRequest==request)vm.focusRequest=0},
         onFocus={ if(vm.home&&state.connected)vm.newChat(true) })
 
-    Box(Modifier.fillMaxSize().background(Color(0xFFFAFAFA)).statusBarsPadding().navigationBarsPadding().imePadding()) {
+    Box(Modifier.fillMaxSize().background(NativeTheme.colors.background).statusBarsPadding().navigationBarsPadding().imePadding()) {
         when {
-            planText!=null->PlanReader(planText!!,onClose={planText=null},onCopy=copy,onDownload=download)
+            planText!=null->PlanReader(planText!!,onClose={planText=null},onCopy=copy,onDownload=download,
+                onOpenLink=openLink,imageLoader=imageLoader,onOpenImage=openImage,
+                imageBaseDirectory=state.selectedThread?.cwd ?: vm.workspace,imageKey="plan-reader:${state.selectedThread?.id}")
             route=="connection"->ConnectionScreen(saved=editing,connected=state.connected&&editing?.id==vm.activeConnection?.id,
                 onSave={profile,secret->if(vm.saveConnection(profile,secret,editing?.id))route="home"},onCancel={route="settings"},
                 onDelete=editing?.let { saved->{vm.removeConnection(saved.id);route="settings"} })
@@ -253,7 +273,7 @@ private fun RemoteApp(vm:RemoteViewModel) {
                     if(vm.home)key(imageOwner) {HomeScreen(shell,actions,Modifier.fillMaxSize(),bottomPadding=16.dp)}
                     else {
                         ChatTimeline(vm,latestRequest=latestRequest,onCopy=copy,onPlanOpen={planText=it},onDownload=download,onOpenLink=openLink,
-                            imageLoader=imageLoader,onOpenImage=openImage)
+                            imageLoader=imageLoader,onOpenImage=openImage,topInset=chromeHeight+12.dp)
                     }
                     if(!state.connected && !vm.home) {
                         TextButton(onClick=connect,enabled=!shell.connecting,modifier=Modifier.align(Alignment.BottomCenter)) {
@@ -267,7 +287,7 @@ private fun RemoteApp(vm:RemoteViewModel) {
                 }
                 if(!vm.home && pending!=null) {
                     Column(Modifier.padding(horizontal=16.dp).padding(bottom=8.dp)) {
-                        if(activeRequests.size>1)Text("${activeRequests.size} 个请求等待处理",fontSize=12.sp,color=Color(0xFF5D5D5D),modifier=Modifier.padding(bottom=6.dp))
+                        if(activeRequests.size>1)Text("${activeRequests.size} 个请求等待处理",fontSize=12.sp,color=NativeTheme.colors.muted,modifier=Modifier.padding(bottom=6.dp))
                         key(pending.key) {
                             when(pending.kind) {
                                 RequestKind.USER_INPUT -> ToolUserInputCard(pending.params,!pending.submitting&&state.connected,{vm.answer(pending,it)})
@@ -279,7 +299,7 @@ private fun RemoteApp(vm:RemoteViewModel) {
                         }
                     }
                 } else if(planDecision!=null) {
-                    PlanDecisionCard(enabled=state.connected,onImplement={vm.implementPlan(planDecision.id)},
+                    PlanDecisionCard(planId="$imageOwner:${state.selectedThread?.id}:${planDecision.id}",enabled=state.connected,onImplement={vm.implementPlan(planDecision.id)},
                         onRevise={vm.revisePlan(planDecision.id,it)},onSkip={vm.dismissPlan(planDecision.id)},modifier=Modifier.padding(horizontal=16.dp).padding(bottom=8.dp))
                 } else {
                     if(!vm.home)vm.currentAsync?.let { question ->
@@ -301,7 +321,7 @@ private fun RemoteApp(vm:RemoteViewModel) {
         }
         if(route=="home" && !vm.home && planText==null) {
             if(state.items.isEmpty()&&!state.loadingThread)NewChatChrome(actions,Modifier.align(Alignment.TopCenter))
-            else ChatChrome(shell,actions,Modifier.align(Alignment.TopCenter))
+            else ChatChrome(shell,actions,Modifier.align(Alignment.TopCenter).onSizeChanged {chromeHeight=with(density){it.height.toDp()}})
         }
         SnackbarHost(snack,Modifier.align(Alignment.BottomCenter).padding(16.dp))
     }
@@ -322,35 +342,63 @@ private fun RemoteApp(vm:RemoteViewModel) {
     archive?.let {target -> key(target) {
         var saving by remember {mutableStateOf(false)}
         var failure by remember {mutableStateOf<String?>(null)}
-        AlertDialog(onDismissRequest={if(!saving)archive=null},containerColor=Color.White,shape=RoundedCornerShape(28.dp),
-            title={Text("归档聊天？")},text={Column {Text("“${target.title}”会保留在服务器中，可在搜索中查看已归档聊天。");failure?.let {Text(it,color=Color(0xFFB42318),modifier=Modifier.padding(top=12.dp))}}},
+        AlertDialog(onDismissRequest={if(!saving)archive=null},containerColor=NativeTheme.colors.surface,shape=RoundedCornerShape(28.dp),
+            title={Text("归档聊天？")},text={Column {Text("“${target.title}”会保留在服务器中，可在搜索中查看已归档聊天。");failure?.let {Text(it,color=NativeTheme.colors.danger,modifier=Modifier.padding(top=12.dp))}}},
             confirmButton={TextButton(enabled=!saving,onClick={saving=true;failure=null;vm.archiveThread(target.id,target.owner).whenComplete {_,error->
                 if(archive==target) {saving=false;if(error==null)archive=null else failure=threadActionError(error)}
-            }}){Text(if(saving)"正在归档…" else "归档",color=Color(0xFFE02D3C))}},
+            }}){Text(if(saving)"正在归档…" else "归档",color=NativeTheme.colors.danger)}},
             dismissButton={TextButton(enabled=!saving,onClick={archive=null}){Text("取消")}})
     } }
     delete?.let {target -> key(target) {
         var deleting by remember {mutableStateOf(false)}
+        var checking by remember {mutableStateOf(true)}
+        var loadAttempt by remember {mutableIntStateOf(0)}
+        var deletionPlan by remember {mutableStateOf<ThreadDeletionPlan?>(null)}
         var failure by remember {mutableStateOf<String?>(null)}
-        AlertDialog(onDismissRequest={if(!deleting)delete=null},containerColor=Color.White,shape=RoundedCornerShape(28.dp),
-            title={Text("永久删除聊天？")},
-            text={Column {
-                Text("将永久删除“${target.title}”及其子代理聊天记录，删除后无法恢复。项目文件不受影响。")
-                failure?.let {Text(it,color=Color(0xFFB42318),modifier=Modifier.padding(top=12.dp))}
-            }},
-            confirmButton={TextButton(enabled=!deleting,onClick={
-                deleting=true;failure=null
-                vm.deleteThread(target.id,target.owner).whenComplete {_,error->
-                    if(delete==target) {deleting=false;if(error==null)delete=null else failure=threadActionError(error)}
+        LaunchedEffect(loadAttempt) {
+            checking=true;failure=null;deletionPlan=null
+            vm.prepareThreadDeletion(target.id,target.owner).whenComplete {plan,error ->
+                if(delete==target) {
+                    checking=false
+                    if(error==null)deletionPlan=plan else failure=threadActionError(error)
                 }
-            }){Text(if(deleting)"正在删除…" else "永久删除",color=Color(0xFFE02D3C))}},
+            }
+        }
+        val related=deletionPlan?.threads.orEmpty().filter {it.id!=target.id}
+        AlertDialog(onDismissRequest={if(!deleting)delete=null},containerColor=NativeTheme.colors.surface,shape=RoundedCornerShape(28.dp),
+            title={Text("永久删除聊天？")},
+            text={Column(Modifier.heightIn(max=360.dp).verticalScroll(rememberScrollState())) {
+                Text("将永久删除“${target.title}”，删除后无法恢复。项目文件不受影响。")
+                if(checking)Text("正在检查关联聊天…",color=NativeTheme.colors.muted,modifier=Modifier.padding(top=12.dp))
+                if(related.isNotEmpty()) {
+                    Text("以下 ${related.size} 个关联聊天（含已归档分叉、子代理）也将一起永久删除。若要保留它们，请取消。",
+                        modifier=Modifier.padding(top=12.dp))
+                    related.forEach {thread ->
+                        Text("• ${thread.title.ifBlank {thread.preview.ifBlank {"未命名聊天"}}}",modifier=Modifier.padding(top=8.dp))
+                        Text(thread.id,fontSize=11.sp,color=NativeTheme.colors.muted)
+                    }
+                }
+                failure?.let {Text(it,color=NativeTheme.colors.danger,modifier=Modifier.padding(top=12.dp))}
+            }},
+            confirmButton={TextButton(enabled=!deleting&&!checking,onClick={
+                val plan=deletionPlan
+                if(plan==null)loadAttempt++ else {
+                    deleting=true;failure=null
+                    vm.deleteThread(plan,target.owner).whenComplete {_,error->
+                        if(delete==target) {
+                            deleting=false
+                            if(error==null)delete=null else {failure=threadActionError(error);deletionPlan=null}
+                        }
+                    }
+                }
+            }){Text(when {deleting->"正在删除…";checking->"正在检查…";deletionPlan==null->"重新读取";related.isNotEmpty()->"永久删除全部 ${related.size+1} 个";else->"永久删除"},color=NativeTheme.colors.danger)}},
             dismissButton={TextButton(enabled=!deleting,onClick={delete=null}){Text("取消")}})
     } }
     removeProject?.let {target ->
-        AlertDialog(onDismissRequest={removeProject=null},containerColor=Color.White,shape=RoundedCornerShape(28.dp),
+        AlertDialog(onDismissRequest={removeProject=null},containerColor=NativeTheme.colors.surface,shape=RoundedCornerShape(28.dp),
             title={Text("从项目列表移除？")},
             text={Text("将从这台手机的项目列表移除“${target.path.substringAfterLast('/').ifBlank {target.path}}”。聊天和服务器文件会保留，可在“已移除的项目”中恢复。")},
-            confirmButton={TextButton(onClick={vm.removeProjectFromList(target.path,target.owner);removeProject=null}){Text("移除",color=Color(0xFFE02D3C))}},
+            confirmButton={TextButton(onClick={vm.removeProjectFromList(target.path,target.owner);removeProject=null}){Text("移除",color=NativeTheme.colors.danger)}},
             dismissButton={TextButton(onClick={removeProject=null}){Text("取消")}})
     }
     if(fullAccess)AlertDialog(onDismissRequest={fullAccess=false},title={Text("允许完全访问？")},text={Text("Codex 将能够修改此服务器上的文件并执行命令，无需逐次审批。")},
@@ -365,8 +413,8 @@ private fun RemoteApp(vm:RemoteViewModel) {
     },onOpen={vm.files.openSaved(context,it)},onOpenImage={
         openImage(ImageSource(ImageSourceKind.RemotePath,file.path,mimeType=file.mimeType,cacheKey=file.path))
     }) }
-    openedImage?.let {source -> ImageViewer(source,imageLoader,onClose={openedImage=null},onSave={
-        vm.imageExport=imageOwner to source;imageExportLauncher.launch(imageFileName(source))
+    openedImage?.let {source -> ImageViewer(source,imageLoader,onClose={openedImage=null},onSave={suggestedName ->
+        vm.imageExport=imageOwner to source;imageExportLauncher.launch(suggestedName)
     })}
     if(changedFilesOpen)vm.changedFiles?.let {summary ->
         ChangedFilesSheet(summary,onDismiss={changedFilesOpen=false},onCopy={copy(it);vm.message="已复制差异"})
@@ -381,10 +429,10 @@ private fun ThreadNameDialog(title:String,initial:String,confirm:String,fieldEna
     var failure by remember {mutableStateOf<String?>(null)}
     var alive by remember {mutableStateOf(true)}
     DisposableEffect(Unit) {onDispose {alive=false}}
-    AlertDialog(onDismissRequest={if(!saving)onDismiss()},containerColor=Color.White,shape=RoundedCornerShape(28.dp),
+    AlertDialog(onDismissRequest={if(!saving)onDismiss()},containerColor=NativeTheme.colors.surface,shape=RoundedCornerShape(28.dp),
         title={Text(title)},text={Column {
             OutlinedTextField(text,{text=it;failure=null},enabled=!saving&&fieldEnabled,singleLine=true)
-            failure?.let {Text(it,color=Color(0xFFB42318),modifier=Modifier.padding(top=12.dp))}
+            failure?.let {Text(it,color=NativeTheme.colors.danger,modifier=Modifier.padding(top=12.dp))}
         }},confirmButton={TextButton(enabled=!saving&&text.isNotBlank(),onClick={
             saving=true;failure=null
             onSave(text.trim()).whenComplete {_,error->if(alive) {saving=false;if(error==null)onDismiss() else failure=threadActionError(error)}}
@@ -399,10 +447,10 @@ private fun threadActionError(error:Throwable):String = when(val cause=generateS
 
 @Composable
 private fun ChatTimeline(vm:RemoteViewModel,latestRequest:Int,onCopy:(String)->Unit,onPlanOpen:(String)->Unit,onDownload:(String)->Unit,onOpenLink:(String)->Unit,
-    imageLoader:ImageLoader,onOpenImage:(ImageSource)->Unit) {
+    imageLoader:ImageLoader,onOpenImage:(ImageSource)->Unit,topInset:Dp=84.dp) {
     ChatTimelineContent(state=vm.state,creating=vm.creating,latestRequest=latestRequest,
         onLoadEarlier={vm.observe(vm.repo.loadEarlierTurns())},onCopy=onCopy,onPlanOpen=onPlanOpen,
-        onDownload=onDownload,onOpenLink=onOpenLink,imageLoader=imageLoader,onOpenImage=onOpenImage,onCopyImage=vm::copyImage)
+        onDownload=onDownload,onOpenLink=onOpenLink,imageLoader=imageLoader,onOpenImage=onOpenImage,onCopyImage=vm::copyImage,topInset=topInset)
 }
 
 @Composable
@@ -415,7 +463,7 @@ private fun SearchPage(vm:RemoteViewModel,onBack:()->Unit,onOpen:(String)->Unit)
         LazyColumn { items(vm.state.threads,key={it.id}) { thread ->
             Column(Modifier.fillMaxWidth().clickable { onOpen(thread.id) }.padding(vertical=16.dp)) {
                 Text(thread.title.ifBlank { thread.preview.ifBlank { "新聊天" } },fontSize=17.sp,maxLines=2)
-                Text(thread.cwd,fontSize=12.sp,color=Color(0xFF5D5D5D),maxLines=1)
+                Text(thread.cwd,fontSize=12.sp,color=NativeTheme.colors.muted,maxLines=1)
                 if(archived)TextButton(onClick={vm.observe(vm.repo.archiveThread(thread.id,false)) {vm.observe(vm.repo.refreshThreads(search=query,archived=true))}}){Text("取消归档")}
             }
         }; if(vm.state.nextThreadsCursor!=null)item { TextButton(onClick={vm.observe(vm.repo.refreshThreads(vm.state.nextThreadsCursor,query,archived))}){Text("加载更多")}} }
@@ -424,15 +472,28 @@ private fun SearchPage(vm:RemoteViewModel,onBack:()->Unit,onOpen:(String)->Unit)
 
 @Composable
 private fun WorkspacePicker(vm:RemoteViewModel,onClose:()->Unit) {
-    var path by remember { mutableStateOf(vm.workspace.ifBlank { vm.state.selectedThread?.cwd ?: "/home/codex" }) }
-    var entries by remember { mutableStateOf(emptyList<RemoteEntry>()) };var loading by remember { mutableStateOf(false) };var error by remember { mutableStateOf<String?>(null) }
-    fun load(value:String) { loading=true;error=null;vm.repo.listDirectory(value).whenComplete { list,e -> loading=false;if(e!=null)error="无法读取此目录" else {path=value;entries=list.filter { it.directory }} } }
-    LaunchedEffect(Unit) {load(path)}
+    val owner=vm.imageOwner()
+    val browser=remember(owner) {WorkspaceBrowserState(vm.workspace.ifBlank {vm.state.selectedThread?.cwd ?: "/home/codex"},vm.repo::listDirectory)}
+    DisposableEffect(browser) {onDispose {browser.close()}}
+    LaunchedEffect(browser) {browser.load()}
+    WorkspacePickerDialog(browser,onClose) {path -> if(vm.imageOwner()==owner)vm.updateWorkspace(path);onClose()}
+}
+
+@Composable
+fun WorkspacePickerDialog(browser:WorkspaceBrowserState,onClose:()->Unit,onSelect:(String)->Unit) {
     AlertDialog(onDismissRequest=onClose,title={Text("选择项目目录")},text={Column {
-        OutlinedTextField(path,{path=it},singleLine=true,label={Text("服务器目录")})
-        Row { TextButton(onClick={load(path.substringBeforeLast('/').ifBlank { "/" })}){Text("上一级")};TextButton(onClick={load(path)}){Text("打开")}}
-        if(loading)LinearProgressIndicator(Modifier.fillMaxWidth())
-        error?.let {Text(it,color=Color(0xFFB42318))}
-        LazyColumn(Modifier.heightIn(max=280.dp)) { items(entries,key={it.path}) { entry -> Text(entry.name,Modifier.fillMaxWidth().clickable {load(entry.path)}.padding(vertical=12.dp),fontSize=16.sp) } }
-    }},confirmButton={TextButton(onClick={vm.updateWorkspace(path);onClose()},enabled=path.startsWith('/')){Text("选择此目录")}},dismissButton={TextButton(onClick=onClose){Text("取消")}})
+        OutlinedTextField(browser.path,browser::edit,singleLine=true,label={Text("服务器目录")})
+        Row {
+            TextButton(onClick={browser.load(browser.path.substringBeforeLast('/').ifBlank {"/"})}){Text("上一级")}
+            TextButton(onClick={browser.load()}){Text("打开")}
+        }
+        if(browser.loading)LinearProgressIndicator(Modifier.fillMaxWidth())
+        browser.error?.let {Text(it,color=NativeTheme.colors.danger)}
+        LazyColumn(Modifier.heightIn(max=280.dp)) {
+            items(browser.entries,key={it.path}) {entry ->
+                Text(entry.name,Modifier.fillMaxWidth().clickable {browser.load(entry.path)}.padding(vertical=12.dp),style=NativeTypography.body16)
+            }
+        }
+    }},confirmButton={TextButton(onClick={if(browser.canSelect)onSelect(browser.path)},enabled=browser.canSelect){Text("选择此目录")}},
+        dismissButton={TextButton(onClick=onClose){Text("取消")}})
 }

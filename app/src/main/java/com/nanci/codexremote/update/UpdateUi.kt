@@ -14,13 +14,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import java.util.Locale
+import com.nanci.codexremote.ui.theme.NativeTheme
+import com.nanci.codexremote.ui.theme.NativeTypography
 
 /** New local-client update UI; no claim that this dialog was extracted from the reference APK. */
 @Composable
@@ -57,8 +57,8 @@ fun UpdateUi(coordinator: UpdateCoordinator) {
 
     val release = state.release ?: return
     if (state.phase in setOf(UpdatePhase.Hidden, UpdatePhase.PermissionSettings, UpdatePhase.Installer)) return
-    val ink = Color(0xFF0D0D0D)
-    val secondary = Color(0xFF5D5D5D)
+    val ink = NativeTheme.colors.ink
+    val secondary = NativeTheme.colors.muted
     val title = when (state.phase) {
         UpdatePhase.Available -> "发现新版本 ${release.versionName}"
         UpdatePhase.Downloading -> "正在下载更新"
@@ -68,38 +68,38 @@ fun UpdateUi(coordinator: UpdateCoordinator) {
     }
     AlertDialog(
         onDismissRequest = coordinator::dismiss,
-        shape = RoundedCornerShape(28.dp), containerColor = Color.White,
-        title = { Text(title, color = ink, fontSize = 20.sp, fontWeight = FontWeight.SemiBold) },
+        shape = RoundedCornerShape(28.dp), containerColor = NativeTheme.colors.surface,
+        title = { Text(title, color = ink, style = NativeTypography.title22) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                if (state.phase != UpdatePhase.Available) Text("版本 ${release.versionName}", color = secondary, fontSize = 14.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (state.phase != UpdatePhase.Available) Text("版本 ${release.versionName}", color = secondary, style = NativeTypography.body14)
                 if (state.phase == UpdatePhase.Downloading) {
                     val total = state.progress.totalBytes.takeIf { it > 0 } ?: release.sizeBytes
                     val fraction = if (total > 0) (state.progress.downloadedBytes.toDouble() / total).toFloat().coerceIn(0f, 1f) else 0f
-                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth(), color = ink, trackColor = Color(0xFFECECEC))
-                    Text("${sizeLabel(state.progress.downloadedBytes)} / ${sizeLabel(total)}", color = secondary, fontSize = 13.sp)
+                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth(), color = ink, trackColor = NativeTheme.colors.border)
+                    Text("${sizeLabel(state.progress.downloadedBytes)} / ${sizeLabel(total)}", color = secondary, style = NativeTypography.caption12)
                 }
-                state.message?.let { Text(it, color = secondary, fontSize = 14.sp, lineHeight = 21.sp) }
-                if (state.phase == UpdatePhase.Ready && state.message == null) Text("更新包已验证，准备好后即可安装。", color = secondary, fontSize = 14.sp, lineHeight = 21.sp)
+                state.message?.let { Text(it, color = secondary, style = NativeTypography.body14) }
+                if (state.phase == UpdatePhase.Ready && state.message == null) Text("更新包已验证，准备好后即可安装。", color = secondary, style = NativeTypography.body14)
                 if (state.phase == UpdatePhase.Available) {
                     if (release.releaseNotes.isNotEmpty()) Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        release.releaseNotes.forEach { note -> Text(note, color = ink, fontSize = 14.sp, lineHeight = 21.sp) }
+                        release.releaseNotes.forEach { note -> Text(note, color = ink, style = NativeTypography.body14) }
                     }
-                    Text("下载大小 ${sizeLabel(release.sizeBytes)}", color = secondary, fontSize = 12.sp)
+                    Text("下载大小 ${sizeLabel(release.sizeBytes)}", color = secondary, style = NativeTypography.caption12)
                 }
             }
         },
         confirmButton = {
             when (state.phase) {
-                UpdatePhase.Available -> TextButton(onClick = coordinator::download) { Text("下载更新", color = ink, fontWeight = FontWeight.SemiBold) }
-                UpdatePhase.DownloadError -> TextButton(onClick = coordinator::download) { Text("重试", color = ink, fontWeight = FontWeight.SemiBold) }
-                UpdatePhase.Ready -> TextButton(onClick = ::install) { Text("安装", color = ink, fontWeight = FontWeight.SemiBold) }
-                UpdatePhase.Downloading -> TextButton(onClick = coordinator::dismiss) { Text("取消下载", color = ink) }
+                UpdatePhase.Available -> TextButton(onClick = coordinator::download) { Text("下载更新", color = ink, style = NativeTypography.body14, fontWeight = FontWeight.SemiBold) }
+                UpdatePhase.DownloadError -> TextButton(onClick = coordinator::download) { Text("重试", color = ink, style = NativeTypography.body14, fontWeight = FontWeight.SemiBold) }
+                UpdatePhase.Ready -> TextButton(onClick = ::install) { Text("安装", color = ink, style = NativeTypography.body14, fontWeight = FontWeight.SemiBold) }
+                UpdatePhase.Downloading -> TextButton(onClick = coordinator::dismiss) { Text("取消下载", color = ink, style = NativeTypography.body14) }
                 else -> Unit
             }
         },
         dismissButton = {
-            if (state.phase != UpdatePhase.Downloading) TextButton(onClick = coordinator::dismiss) { Text("稍后", color = secondary) }
+            if (state.phase != UpdatePhase.Downloading) TextButton(onClick = coordinator::dismiss) { Text("稍后", color = secondary, style = NativeTypography.body14) }
         },
     )
 }

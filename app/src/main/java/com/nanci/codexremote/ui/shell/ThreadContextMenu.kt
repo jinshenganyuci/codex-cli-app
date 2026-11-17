@@ -1,5 +1,7 @@
 package com.nanci.codexremote.ui.shell
 
+import com.nanci.codexremote.ui.theme.NativeTheme
+
 import android.view.View
 import android.view.ViewTreeObserver
 import androidx.compose.foundation.background
@@ -17,7 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import com.nanci.codexremote.ui.theme.nativeShadow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -96,11 +98,11 @@ internal fun ThreadContextMenu(
                                 if (!sectionsOpen) finish { actions.onMarkUnread(thread.id) }
                             }
                             ThreadMenuRow("复制对话串 ID", "copy") { if (!sectionsOpen) finish { actions.onCopyId(thread.id) } }
-                            ThreadMenuRow("归档", "archive", color = Color(0xFFD91843), enabled = availability.canArchive,
+                            ThreadMenuRow("归档", "archive", color = NativeTheme.colors.danger, enabled = availability.canArchive,
                                 disabledReason = availability.disabledReason) {
                                 if (!sectionsOpen) finish { actions.onArchive(thread.id) }
                             }
-                            ThreadMenuRow("永久删除", "trash", color = Color(0xFFD91843),
+                            ThreadMenuRow("永久删除", "trash", color = NativeTheme.colors.danger,
                                 enabled = availability.canDelete && actions.onDelete != null,
                                 disabledReason = availability.disabledReason ?: "服务器尚未确认支持永久删除") {
                                 if (!sectionsOpen) actions.onDelete?.let { delete -> finish { delete(thread.id) } }
@@ -110,7 +112,7 @@ internal fun ThreadContextMenu(
                     if (sectionsOpen) MenuCard {
                         Column(Modifier.width(IntrinsicSize.Max).verticalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 8.dp)) {
                             ThreadMenuRow("移至分区", "folder-down", trailing = "chevron") { sectionsOpen = false }
-                            HorizontalDivider(Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp), color = Color(0xFFE7E7E7))
+                            HorizontalDivider(Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp), color = NativeTheme.colors.border)
                             Spacer(Modifier.height(8.dp))
                             if (state.sectionsLoading) {
                                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -131,7 +133,7 @@ internal fun ThreadContextMenu(
                                     }
                                 }
                             }
-                            if (state.sections.isNotEmpty()) HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), color = Color(0xFFE7E7E7))
+                            if (state.sections.isNotEmpty()) HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), color = NativeTheme.colors.border)
                             ThreadMenuRow("新建分区…", "folder-plus", enabled = availability.canMoveToSection, disabledReason = availability.disabledReason) {
                                 finish { actions.onCreateSection(thread.id) }
                             }
@@ -233,12 +235,12 @@ internal fun clampMenuPosition(desired: Int, start: Int, end: Int, size: Int, in
 internal fun MenuCard(parentCovered: Boolean = false, content: @Composable () -> Unit) {
     val shape = RoundedCornerShape(22.dp)
     Box(Modifier.graphicsLayer { scaleX = if (parentCovered) .97f else 1f; scaleY = if (parentCovered) .97f else 1f }
-        .shadow(24.dp, shape, clip = false, ambientColor = Color.Black.copy(alpha = .07f), spotColor = Color.Black.copy(alpha = .04f))
-        .clip(shape).background(Color.White)
+        .nativeShadow(shape, 90.dp, Color.Black.copy(alpha = .20f))
+        .clip(shape).background(NativeTheme.colors.surface)
         .pointerInput(Unit) { detectTapGestures(onTap = {}) }
         .then(if (parentCovered) Modifier.clearAndSetSemantics { } else Modifier), propagateMinConstraints = true) {
         content()
-        if (parentCovered) Box(Modifier.matchParentSize().background(Color(0xFFFCFCFC).copy(alpha = .5f)).clickable(
+        if (parentCovered) Box(Modifier.matchParentSize().background(NativeTheme.colors.surface.copy(alpha = .5f)).clickable(
             interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {},
         ))
     }
@@ -248,7 +250,7 @@ internal fun MenuCard(parentCovered: Boolean = false, content: @Composable () ->
 @Composable
 internal fun ThreadMenuRow(label: String, glyph: String, trailing: String? = null, enabled: Boolean = true,
     disabledReason: String? = null, color: Color = ShellInk, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val tint = if (enabled) color else Color(0xFFAAAAAA)
+    val tint = if (enabled) color else NativeTheme.colors.tertiary
     Row(modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = enabled, onClick = onClick)
         .then(if (!enabled && !disabledReason.isNullOrBlank()) Modifier.semantics { stateDescription = disabledReason } else Modifier)
         .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {

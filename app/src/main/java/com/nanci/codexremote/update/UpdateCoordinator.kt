@@ -97,6 +97,7 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
         if (publicRelease) { checkIfNeeded(); return }
         val changed = identity(active) != identity(saved)
         active = saved
+        if (changed) checked = false
         if (changed && origin != null && identity(origin) != identity(saved)) {
             // Never reinterpret an old release or verified file as belonging to a new host.
             operation++; checking = false; repository.cancel()
@@ -228,7 +229,7 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
                 val current = store.list().firstOrNull { it.id == saved.id }
                     ?: throw UpdateException("连接已移除，请重新选择服务器。")
                 if (identity(current) != identity(saved)) throw UpdateException("连接设置已改变，请重新打开应用后检查更新。")
-                store.loadCredential(saved.id) ?: throw UpdateException("连接凭据不可用，请重新导入后再试。")
+                store.loadCredential(saved) ?: throw UpdateException("连接凭据不可用，请重新导入后再试。")
             }
             main.post {
                 val secret = loaded.getOrNull()
@@ -250,9 +251,7 @@ class UpdateCoordinator(application: Application) : AndroidViewModel(application
     private fun current(token: Long, saved: SavedConnection?): Boolean = !closed && token == operation &&
         (publicRelease || saved != null && identity(saved) == identity(active))
     private fun originMatches(): Boolean = publicRelease || identity(origin) == identity(active)
-    private fun identity(saved: SavedConnection?): String? = saved?.let {
-        listOf(it.id, it.profile.host, it.profile.port.toString(), it.profile.user, it.profile.fingerprint, it.profile.hostKeyAlgorithm).joinToString("\u0000")
-    }
+    private fun identity(saved: SavedConnection?): String? = saved?.ownerKey
     private fun safeFailure(error: Throwable): String {
         val cause = generateSequence(error) { it.cause }.last()
         return (cause as? UpdateException)?.safeMessage ?: "更新下载未完成，请检查连接后重试。"

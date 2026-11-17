@@ -19,6 +19,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONObject
+import com.nanci.codexremote.ui.theme.NativeTheme
 
 /** Same image view for sent attachments, generated images and tool images. No decoding happens here. */
 @Composable
@@ -31,6 +32,7 @@ fun MessageImage(
     quietLoading: Boolean = false,
     fillCell: Boolean = false,
     onImageSize: ((Int,Int) -> Unit)? = null,
+    clampAspectRatio: Boolean = true,
 ) {
     val payloadIdentity=System.identityHashCode(source.value)
     var retry by remember(source.cacheKey,payloadIdentity) { mutableIntStateOf(0) }
@@ -47,14 +49,17 @@ fun MessageImage(
         val widthLimit=if(fillCell) maxWidth else minOf(maxWidth,280.dp)
         when(val current=state) {
             is ImageLoadState.Ready -> {
-                val ratio=current.bitmap.width.coerceAtLeast(1).toFloat()/current.bitmap.height.coerceAtLeast(1)
+                val originalRatio=current.bitmap.width.coerceAtLeast(1).toFloat()/current.bitmap.height.coerceAtLeast(1)
+                // kx61 passes g5f1.l mask64 (clamp 0.5..2 and Crop outside it).
+                // i3h0 Markdown passes mask12; that caller explicitly opts out.
+                val ratio=if(clampAspectRatio) originalRatio.coerceIn(.5f,2f) else originalRatio
                 val fittedWidth=minOf(widthLimit,350.dp*ratio)
                 LaunchedEffect(source.cacheKey,payloadIdentity,current.bitmap.width,current.bitmap.height) {
                     onImageSize?.invoke(current.bitmap.width,current.bitmap.height)
                 }
                 val imageSize=if(fillCell) Modifier.fillMaxSize() else Modifier.width(fittedWidth).height(fittedWidth/ratio)
                 Image(current.bitmap,label,imageSize.clip(RoundedCornerShape(28.dp)).clickable { onOpenImage(source) },
-                    contentScale=if(fillCell) ContentScale.Crop else ContentScale.Fit)
+                    contentScale=if(fillCell || ratio!=originalRatio) ContentScale.Crop else ContentScale.Fit)
             }
             else -> Box((if(fillCell) Modifier.fillMaxSize() else Modifier.width(widthLimit).aspectRatio(1f)).clip(RoundedCornerShape(28.dp))
                 .then(if(quietLoading && current is ImageLoadState.Loading) Modifier.background(generatedPlaceholderBrush()) else Modifier.background(ContentField))
@@ -181,4 +186,8 @@ private fun GeneratedImagePlaceholder() {
     }
 }
 
-private fun generatedPlaceholderBrush() = Brush.horizontalGradient(listOf(Color(0xFFE2E2E2),Color(0xFFE2E2E2),Color(0xFFEAEAEA)))
+@Composable
+private fun generatedPlaceholderBrush(): Brush {
+    val colors=NativeTheme.colors
+    return Brush.horizontalGradient(listOf(colors.field,colors.field,colors.border))
+}

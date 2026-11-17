@@ -16,13 +16,30 @@ import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-data class SavedConnection(val id: String, val profile: ConnectionProfile, val hasCredential: Boolean)
+/** The revision is a random local identity, never a hash of credential material. */
+data class SavedConnection(
+    val id: String,
+    val profile: ConnectionProfile,
+    val hasCredential: Boolean,
+    val credentialRevision: String = "",
+) {
+    /** Preserve the pre-revision identity for unchanged legacy connections. */
+    val ownerKey: String get() = buildList {
+        add(id); add(profile.host); add(profile.port.toString()); add(profile.user)
+        add(profile.fingerprint.trimEnd('=')); add(profile.hostKeyAlgorithm); add(profile.codexPath)
+        if (credentialRevision.isNotEmpty()) add(credentialRevision)
+    }.joinToString("\u0000")
+
+    val identityKey: String get() = MessageDigest.getInstance("SHA-256")
+        .digest(ownerKey.toByteArray(StandardCharsets.UTF_8)).joinToString("") { "%02x".format(it) }
+}
 
 /** Pending enrollment is never returned by list() or selected as a usable connection. */
 class PendingBootstrap(val inviteId: String, val connectionId: String, val credential: SshCredential) : AutoCloseable {
@@ -42,8 +59,24 @@ class ConnectionStore(context: Context) {
         @Synchronized private set(value) { commit(prefs.edit().putString("active", value)) }
 
     var workspace: String
-        @Synchronized get() = prefs.getString("workspace", "") ?: ""
-        @Synchronized set(value) { commit(prefs.edit().putString("workspace", value.trim())) }
+        @Synchronized get() = list().firstOrNull { it.id == activeId }?.let(::workspaceFor) ?: ""
+        @Synchronized set(value) {
+            val connection = list().firstOrNull { it.id == activeId }
+                ?: throw ConnectionStorageException("请先选择服务器连接。")
+            setWorkspace(connection, value)
+        }
+
+    @Synchronized fun workspaceFor(connection: SavedConnection): String {
+        migrateLegacyWorkspace()
+        return prefs.getString(workspaceKey(connection), "") ?: ""
+    }
+
+    @Synchronized fun setWorkspace(connection: SavedConnection, value: String) {
+        migrateLegacyWorkspace()
+        if (list().none { it.id == connection.id && it.ownerKey == connection.ownerKey })
+            throw ConnectionStorageException("连接已改变，请重新选择工作目录。")
+        commit(prefs.edit().putString(workspaceKey(connection), checkedWorkspace(value)))
+    }
 
     @Synchronized fun list(): List<SavedConnection> = guarded("无法读取连接设置；原有数据已保留。") {
         val rows = JSONArray(prefs.getString("profiles", "[]"))
@@ -56,11 +89,12 @@ class ConnectionStore(context: Context) {
                 name = row.optString("name", row.getString("host")),
                 hostKeyAlgorithm = row.optString("hostKeyAlgorithm", "ecdsa-sha2-nistp256"),
                 codexPath = row.optString("codexPath", "~/.local/bin/codex"),
-            ), prefs.contains("secret:$id"))
+            ), prefs.contains("secret:$id"), row.optString("credentialRevision", ""))
         }
     }
 
     @Synchronized fun setActive(id: String) {
+        migrateLegacyWorkspace()
         if (list().none { it.id == id }) throw ConnectionStorageException("这条连接已不存在。")
         activeId = id
     }
@@ -70,10 +104,16 @@ class ConnectionStore(context: Context) {
         if (profile.host.isBlank() || profile.port !in 1..65535 || profile.user.isBlank() ||
             !profile.fingerprint.startsWith("SHA256:")) throw ConnectionStorageException("连接信息不完整。")
         val existing = list().toMutableList()
+        // Claim the old global directory for its original owner before changing active/id/key.
+        migrateLegacyWorkspace()
         val targetId = id ?: UUID.randomUUID().toString()
         if (id != null && existing.none { it.id == id }) throw ConnectionStorageException("这条连接已不存在，请重新添加。")
+        val previous = existing.firstOrNull { it.id == targetId }
         val secret = credential?.let { encrypt(targetId, it) }
-        val saved = SavedConnection(targetId, profile, secret != null || prefs.contains("secret:$targetId"))
+        val ownerChanged = previous != null && previous.copy(profile = profile).ownerKey != previous.ownerKey
+        val revision = if (previous == null || credential != null || ownerChanged) UUID.randomUUID().toString()
+            else previous.credentialRevision
+        val saved = SavedConnection(targetId, profile, secret != null || prefs.contains("secret:$targetId"), revision)
         val index = existing.indexOfFirst { it.id == targetId }
         if (index >= 0) existing[index] = saved else existing += saved
         val edit = prefs.edit().putString("profiles", serialize(existing)).putString("active", targetId)
@@ -85,6 +125,18 @@ class ConnectionStore(context: Context) {
     @Synchronized fun loadCredential(id: String): SshCredential? {
         val encoded = prefs.getString("secret:$id", null) ?: return null
         return decrypt(id, encoded)
+    }
+
+    /** Reject a credential replaced between an async caller's snapshot and this read. */
+    @Synchronized fun loadCredential(connection: SavedConnection): SshCredential? {
+        fun current() = list().any { it.id == connection.id && it.ownerKey == connection.ownerKey }
+        if (!current()) throw ConnectionStorageException("连接身份已改变，请重新连接。")
+        val credential = loadCredential(connection.id)
+        if (!current()) {
+            credential?.close()
+            throw ConnectionStorageException("连接身份已改变，请重新连接。")
+        }
+        return credential
     }
 
     private fun decrypt(id: String, encoded: String): SshCredential =
@@ -110,6 +162,38 @@ class ConnectionStore(context: Context) {
         }
         return true
     }
+
+    /** A replacement invitation may recover an unfinished first install. Never reset an
+     * established connection or a completed enrollment, and retain the key for same-invite retries. */
+    @Synchronized fun prepareBootstrap(inviteId: String): Boolean =
+        guarded("无法读取首次连接资料；原有数据已保留。") {
+            require(inviteId.matches(Regex("[A-Za-z0-9_-]{16,80}")))
+            val state = prefs.getString("bootstrap:state", null)
+            if (state in setOf("completed", "existing")) return@guarded false
+            if (list().isNotEmpty()) {
+                canBootstrap()
+                return@guarded false
+            }
+            // Older APKs recorded the invitation only inside pending. Read it before
+            // deciding whether a cancellation belongs to this package's invitation.
+            val pendingId = prefs.getString("bootstrap:pending", null)?.let {
+                JSONObject(it).getString("inviteId")
+            }
+            val previousId = prefs.getString("bootstrap:invite", null) ?: pendingId
+            if (previousId != null && previousId != inviteId) {
+                commitBootstrap(prefs.edit().putString("bootstrap:invite", inviteId)
+                    .putString("bootstrap:state", "ready").remove("bootstrap:pending").remove("bootstrap:durable"),
+                    "bootstrap:invite", "bootstrap:state", "bootstrap:pending", "bootstrap:durable")
+            } else {
+                // A legacy cancellation with no recorded invitation cannot safely be
+                // identified as a replacement. Preserve that explicit cancellation.
+                if (state == "cancelled") return@guarded false
+                if (previousId != inviteId || !prefs.contains("bootstrap:invite")) {
+                    commitBootstrap(prefs.edit().putString("bootstrap:invite", inviteId), "bootstrap:invite")
+                }
+            }
+            canBootstrap()
+        }
 
     @Synchronized fun loadPendingBootstrap(inviteId: String): PendingBootstrap? {
         val encoded = prefs.getString("bootstrap:pending", null) ?: return null
@@ -143,11 +227,13 @@ class ConnectionStore(context: Context) {
             val record = JSONObject(prefs.getString("bootstrap:pending", null) ?: error("pending missing"))
             require(record.getString("inviteId") == inviteId)
             val id = record.getString("id")
-            val saved = SavedConnection(id, profile, true)
+            migrateLegacyWorkspace()
+            val saved = SavedConnection(id, profile, true, UUID.randomUUID().toString())
+            val workspaceKey = workspaceKey(saved)
             commitBootstrap(prefs.edit().putString("profiles", serialize(listOf(saved))).putString("active", id)
-                .putString("secret:$id", record.getString("secret")).putString("workspace", workspace)
+                .putString("secret:$id", record.getString("secret")).putString(workspaceKey, checkedWorkspace(workspace))
                 .putString("bootstrap:state", "completed").remove("bootstrap:pending").remove("bootstrap:durable"),
-                "profiles", "active", "secret:$id", "workspace", "bootstrap:state", "bootstrap:pending", "bootstrap:durable")
+                "profiles", "active", "secret:$id", workspaceKey, "bootstrap:state", "bootstrap:pending", "bootstrap:durable")
             saved
         }
 
@@ -171,6 +257,7 @@ class ConnectionStore(context: Context) {
     }
 
     @Synchronized fun remove(id: String) {
+        migrateLegacyWorkspace()
         val remaining = list().filterNot { it.id == id }
         val edit = prefs.edit().putString("profiles", serialize(remaining)).remove("secret:$id")
         if (activeId == id) edit.putString("active", remaining.firstOrNull()?.id)
@@ -183,8 +270,31 @@ class ConnectionStore(context: Context) {
             put("user", saved.profile.user); put("fingerprint", saved.profile.fingerprint)
             put("name", saved.profile.name); put("hostKeyAlgorithm", saved.profile.hostKeyAlgorithm)
             put("codexPath", saved.profile.codexPath)
+            put("credentialRevision", saved.credentialRevision)
         }) }
     }.toString()
+
+    /** A legacy global value belongs only to the connection active before the migration. */
+    private fun migrateLegacyWorkspace() {
+        if (!prefs.contains("workspace")) return
+        val legacy = prefs.getString("workspace", "").orEmpty()
+        val previousOwner = list().firstOrNull { it.id == activeId }
+        val edit = prefs.edit().remove("workspace")
+        if (previousOwner != null) {
+            val key = workspaceKey(previousOwner)
+            if (!prefs.contains(key)) edit.putString(key, legacy)
+        } else if (legacy.isNotEmpty()) {
+            // No reliable owner: retain it for recovery, but never assign it to a later connection.
+            edit.putString("legacy-workspace-unassigned", legacy)
+        }
+        commit(edit)
+    }
+
+    private fun workspaceKey(connection: SavedConnection) = "workspace:${connection.identityKey}"
+    private fun checkedWorkspace(value: String): String = value.trim().also {
+        if ((it.isNotEmpty() && !it.startsWith('/')) || it.any { char -> char.code < 32 || char.code == 127 })
+            throw ConnectionStorageException("工作目录需要是服务器上的有效绝对路径。")
+    }
 
     private fun encrypt(id: String, credential: SshCredential): String = guarded("无法安全保存连接凭据；原有数据未改变。") {
         require(credential.privateKey?.isNotEmpty() == true || credential.password?.isNotEmpty() == true)

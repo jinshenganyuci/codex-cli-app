@@ -17,7 +17,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nanci.codexremote.core.approvalDecisionsFor
 import org.json.JSONArray
+import com.nanci.codexremote.ui.theme.NativeTypography
+import com.nanci.codexremote.ui.theme.NativeTheme
 import org.json.JSONObject
 
 /** Never infer an approval from the visible label: every row carries its exact wire decision. */
@@ -28,13 +31,8 @@ fun ApprovalCard(method: String, params: JSONObject, enabled: Boolean = true,
     val permissions=method=="item/permissions/requestApproval"
     val legacy=method=="execCommandApproval" || method=="applyPatchApproval"
     val fileChange=method.contains("fileChange") || method=="applyPatchApproval"
-    val decisions=remember(method,params.toString()) {
-        val a=params.optJSONArray("availableDecisions")
-        if(a!=null) (0 until a.length()).mapNotNull { a.opt(it) }
-        else if(legacy) listOf("approved","approved_for_session",JSONObject().put("denied",JSONObject().put("rejection","")),"abort")
-        else listOf("accept","acceptForSession","decline","cancel")
-    }
-    val canDecline=permissions || legacy || decisions.any { it=="decline" }
+    val decisions=remember(method,params.toString()) { approvalDecisionsFor(method,params) }
+    val canDecline=permissions || decisions.any { it=="decline" || it=="denied" || it is JSONObject && it.has("denied") }
     val canCancel=!permissions && decisions.any { it=="cancel" || it=="abort" }
     fun respond(value: Any, note: String? = null) { onReply(JSONObject().put("decision",value),note) }
     fun permissionReply(grant: Boolean,scope: String,note: String? = null) {
@@ -59,13 +57,13 @@ fun ApprovalCard(method: String, params: JSONObject, enabled: Boolean = true,
     ContentCard(modifier) {
         Column(Modifier.heightIn(max=(LocalConfiguration.current.screenHeightDp*.7f).dp).verticalScroll(rememberScrollState())) {
             Text(when { permissions -> "Codex 请求额外权限";fileChange -> "批准文件更改？";else -> "批准运行此命令？" },
-                fontSize=16.sp,lineHeight=24.sp,fontWeight=FontWeight.Medium,color=ContentInk)
+                style=NativeTypography.body16,fontWeight=FontWeight.Medium,color=ContentInk)
             val reason=params.text("reason")
-            if(reason.isNotEmpty()) Text(reason,Modifier.padding(top=8.dp),color=ContentInk,fontSize=14.sp,lineHeight=20.sp)
+            if(reason.isNotEmpty()) Text(reason,Modifier.padding(top=8.dp),color=ContentInk,style=NativeTypography.body14)
             val command=params.opt("command").let { if(it is JSONArray) it.strings().joinToString(" ") else if(it==JSONObject.NULL || it==null) "" else it.toString() }
             if(command.isNotEmpty()) Text(command,Modifier.padding(top=8.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp))
                 .background(ContentField).padding(12.dp),fontFamily=FontFamily.Monospace,fontSize=12.sp,lineHeight=18.sp,color=ContentInk)
-            if(params.text("cwd").isNotEmpty()) Text(params.text("cwd"),Modifier.padding(top=6.dp),fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+            if(params.text("cwd").isNotEmpty()) Text(params.text("cwd"),Modifier.padding(top=6.dp),style=NativeTypography.caption12,color=ContentMuted)
             for(key in listOf("permissions","additionalPermissions","networkApprovalContext","changes","fileChanges")) {
                 val detail=params.opt(key)
                 if(detail!=null && detail!=JSONObject.NULL) {
@@ -84,7 +82,7 @@ fun ApprovalCard(method: String, params: JSONObject, enabled: Boolean = true,
                 HorizontalDivider(color=ContentBorder)
                 ApprovalAction("始终批准","当前会话",enabled) {permissionReply(true,"session")}
             } else {
-                decisions.filter { it!="decline" && it!="cancel" && it!="abort" && !(it is JSONObject && it.has("denied")) }.forEachIndexed { index,decision ->
+                decisions.filter { it!="decline" && it!="denied" && it!="cancel" && it!="abort" && !(it is JSONObject && it.has("denied")) }.forEachIndexed { index,decision ->
                     if(index>0) HorizontalDivider(color=ContentBorder)
                     val label=when(decision) { "accept","approved"->"批准";"acceptForSession","approved_for_session"->"始终批准";else -> when {
                         decision is JSONObject && (decision.has("acceptWithExecpolicyAmendment") || decision.has("approved_execpolicy_amendment")) -> "批准并记住此命令规则"
@@ -107,7 +105,7 @@ fun ApprovalCard(method: String, params: JSONObject, enabled: Boolean = true,
             }
             if(canCancel) Row(Modifier.fillMaxWidth().padding(top=6.dp),horizontalArrangement=Arrangement.End) {
                 Text("取消本次请求",Modifier.clickable(enabled=enabled){respond(if(legacy) "abort" else "cancel")}.padding(vertical=8.dp),
-                    fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+                    style=NativeTypography.caption12,color=ContentMuted)
             }
         }
     }
@@ -219,8 +217,8 @@ private fun ApprovalAction(label: String, detail: String, enabled: Boolean, onCl
         verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
         ContentIcon("check",Modifier.size(16.dp),if(enabled) ContentMuted else ContentMuted.copy(alpha=.4f))
         Column(Modifier.weight(1f)) {
-            Text(label,fontSize=14.sp,lineHeight=20.sp,color=if(enabled) ContentInk else ContentMuted)
-            if(detail.isNotEmpty()) Text(detail,fontSize=12.sp,lineHeight=16.sp,color=ContentMuted)
+            Text(label,style=NativeTypography.body14,color=if(enabled) ContentInk else ContentMuted)
+            if(detail.isNotEmpty()) Text(detail,style=NativeTypography.caption12,color=ContentMuted)
         }
     }
 }

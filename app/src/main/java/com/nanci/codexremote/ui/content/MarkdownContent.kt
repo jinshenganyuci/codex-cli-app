@@ -22,40 +22,93 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nanci.codexremote.ui.theme.NativeTheme
 
-/** A native, inert Markdown renderer. No HTML, scripts, or remote requests execute here. */
+/** Native Markdown: image IO is delegated to the scoped loader; no HTML or scripts execute. */
 @Composable
-fun MarkdownContent(text: String, modifier: Modifier = Modifier, onOpenLink: (String) -> Unit = {}) {
-    val blocks = remember(text) { markdownBlocks(text) }
-    SelectionContainer(modifier) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            for (block in blocks) when (block) {
-                is MdBlock.Paragraph -> RichText(block.text, onOpenLink = onOpenLink)
-                is MdBlock.Heading -> {
-                    val size = when (block.level) { 1 -> 26; 2 -> 23; 3 -> 20; else -> 17 }
-                    RichText(block.text, Modifier.padding(top = if (block.level <= 2) 10.dp else 4.dp),
-                        TextStyle(fontSize = size.sp, lineHeight = (size + 9).sp, fontWeight = FontWeight.SemiBold), onOpenLink)
+fun MarkdownContent(
+    text: String,
+    modifier: Modifier = Modifier,
+    onOpenLink: (String) -> Unit = {},
+    imageLoader: ImageLoader? = null,
+    onOpenImage: (ImageSource) -> Unit = {},
+    imageBaseDirectory: String? = null,
+    imageKey: String = "markdown",
+    referenceDefinitions: Map<String, String> = emptyMap(),
+) {
+    val document = remember(text) { markdownReferenceDocument(text) }
+    val references = remember(document, referenceDefinitions) { document.references + referenceDefinitions }
+    val blocks = remember(document.body) { markdownBlocks(document.body) }
+    val imageContext = remember(imageLoader, onOpenImage, imageBaseDirectory, imageKey, references) {
+        imageLoader?.let { MarkdownImageContext(it, onOpenImage, imageBaseDirectory, imageKey, references) }
+    }
+    CompositionLocalProvider(LocalMarkdownImages provides imageContext) {
+        SelectionContainer(modifier) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                for (block in blocks) when (block) {
+                    is MdBlock.Paragraph -> RichText(block.text, onOpenLink = onOpenLink)
+                    is MdBlock.Heading -> {
+                        val size = when (block.level) { 1 -> 26; 2 -> 23; 3 -> 20; else -> 17 }
+                        RichText(block.text, Modifier.padding(top = if (block.level <= 2) 10.dp else 4.dp),
+                            TextStyle(fontSize = size.sp, lineHeight = (size + 9).sp, fontWeight = FontWeight.SemiBold), onOpenLink)
+                    }
+                    is MdBlock.Code -> CodeContent(block.language, block.text)
+                    is MdBlock.ListItem -> Row(Modifier.padding(start = (block.depth * 20).dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(block.marker, color = ContentInk, fontSize = 16.sp, lineHeight = 24.sp, modifier = Modifier.widthIn(min = 14.dp))
+                        RichText(block.text, Modifier.weight(1f), onOpenLink = onOpenLink)
+                    }
+                    is MdBlock.Quote -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Box(Modifier.width(3.dp).heightIn(min = 24.dp).background(ContentBorder))
+                        RichText(block.text, Modifier.weight(1f), TextStyle(color = ContentMuted), onOpenLink)
+                    }
+                    is MdBlock.Table -> MarkdownTable(block, onOpenLink)
+                    MdBlock.Rule -> HorizontalDivider(color = ContentBorder)
                 }
-                is MdBlock.Code -> CodeContent(block.language, block.text)
-                is MdBlock.ListItem -> Row(Modifier.padding(start = (block.depth * 20).dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(block.marker, color = ContentInk, fontSize = 16.sp, lineHeight = 24.sp, modifier = Modifier.widthIn(min = 14.dp))
-                    RichText(block.text, Modifier.weight(1f), onOpenLink = onOpenLink)
-                }
-                is MdBlock.Quote -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Box(Modifier.width(3.dp).heightIn(min = 24.dp).background(Color(0xFFD6D6D6)))
-                    RichText(block.text, Modifier.weight(1f), TextStyle(color = ContentMuted), onOpenLink)
-                }
-                is MdBlock.Table -> MarkdownTable(block, onOpenLink)
-                MdBlock.Rule -> HorizontalDivider(color = Color(0xFFE5E5E5))
             }
         }
     }
 }
 
-@Suppress("DEPRECATION")
+private data class MarkdownImageContext(
+    val loader: ImageLoader,
+    val open: (ImageSource) -> Unit,
+    val cwd: String?,
+    val key: String,
+    val references: Map<String, String>,
+)
+private val LocalMarkdownImages = compositionLocalOf<MarkdownImageContext?> { null }
+
 @Composable
 private fun RichText(text: String, modifier: Modifier = Modifier, style: TextStyle = TextStyle(), onOpenLink: (String) -> Unit) {
-    val annotated = remember(text) { inlineMarkdown(text) }
+    val context = LocalMarkdownImages.current
+    val images = remember(text, context?.cwd, context?.key, context?.references, context != null) {
+        if (context == null) emptyList() else markdownImageSpans(text, context.references).mapNotNull { span ->
+            resolveMarkdownImageSource(span.destination, "${context.key}:${text.hashCode()}:${span.start}", context.cwd)
+                ?.let { source -> span to source }
+        }
+    }
+    if (images.isEmpty() || context == null) {
+        TextOnlyRichText(text, modifier, style, onOpenLink)
+    } else Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        var cursor = 0
+        images.forEach { (span, source) ->
+            val preceding = text.substring(cursor, span.start)
+            if (preceding.isNotBlank()) TextOnlyRichText(preceding, style = style, onOpenLink = onOpenLink)
+            key(source.cacheKey) {
+                MessageImage(source, inlineMarkdown(span.alt).text.ifBlank { "图片" }, context.loader, context.open, clampAspectRatio = false)
+            }
+            cursor = span.end
+        }
+        val remaining = text.substring(cursor)
+        if (remaining.isNotBlank()) TextOnlyRichText(remaining, style = style, onOpenLink = onOpenLink)
+    }
+}
+
+@Suppress("DEPRECATION")
+@Composable
+private fun TextOnlyRichText(text: String, modifier: Modifier = Modifier, style: TextStyle = TextStyle(), onOpenLink: (String) -> Unit) {
+    val colors = NativeTheme.colors
+    val annotated = remember(text,colors.accent,colors.field) { inlineMarkdown(text,colors.accent,colors.field) }
     ClickableText(annotated, modifier, style = TextStyle(color = ContentInk, fontSize = 16.sp, lineHeight = 24.sp).merge(style),
         onClick = { offset -> annotated.getStringAnnotations("url", offset, offset).firstOrNull()?.let { onOpenLink(it.item) } })
 }
@@ -85,7 +138,7 @@ private fun MarkdownTable(table: MdBlock.Table, onOpenLink: (String) -> Unit) {
                         TextStyle(fontSize = 14.sp, lineHeight = 21.sp, fontWeight = if (index == 0) FontWeight.SemiBold else FontWeight.Normal), onOpenLink)
                 }
             }
-            HorizontalDivider(color = Color(0xFFE5E5E5))
+            HorizontalDivider(color = ContentBorder)
         }
     }
 }
@@ -117,8 +170,19 @@ private fun markdownBlocks(text: String): List<MdBlock> {
         val list = listPattern.matchEntire(line)
         when {
             trimmed.startsWith("```") || trimmed.startsWith("~~~") -> {
-                flush(); val fence = trimmed.take(3); val language = trimmed.drop(3).trim(); val content = mutableListOf<String>(); i++
-                while (i < lines.size && !lines[i].trimStart().startsWith(fence)) { content += lines[i]; i++ }
+                flush()
+                val fenceCharacter = trimmed.first()
+                val fenceLength = trimmed.takeWhile { it == fenceCharacter }.length
+                val language = trimmed.drop(fenceLength).trim()
+                val content = mutableListOf<String>()
+                i++
+                while (i < lines.size) {
+                    val candidate = lines[i].trimStart()
+                    val closingLength = candidate.takeWhile { it == fenceCharacter }.length
+                    if (closingLength >= fenceLength && candidate.drop(closingLength).isBlank()) break
+                    content += lines[i]
+                    i++
+                }
                 result += MdBlock.Code(language, content.joinToString("\n"))
             }
             line.isBlank() -> flush()
@@ -147,10 +211,9 @@ private fun markdownBlocks(text: String): List<MdBlock> {
     return result
 }
 
-private fun splitTableRow(line: String): List<String> = line.trim().removePrefix("|").removeSuffix("|").split('|').map { it.trim() }
-
 /** Parsers preserve unknown Markdown literally rather than discarding model output. */
-internal fun inlineMarkdown(source: String): AnnotatedString = buildAnnotatedString {
+internal fun inlineMarkdown(source: String, linkColor: Color = Color(0xFF2755B4),
+    codeBackground: Color = Color(0xFFECECEC)): AnnotatedString = buildAnnotatedString {
     fun appendRange(text: String, depth: Int = 0) {
         if (depth > 8) { append(text); return }
         var i = 0
@@ -160,38 +223,37 @@ internal fun inlineMarkdown(source: String): AnnotatedString = buildAnnotatedStr
                 val middle = text.indexOf("](", i + 1)
                 val end = if (middle >= 0) linkDestinationEnd(text, middle + 2) else -1
                 if (middle > i && end > middle) {
-                    val raw = text.substring(middle + 2, end).trim()
-                    val url = (if (raw.startsWith('<')) raw.substring(1, raw.indexOf('>'))
-                        else raw.substringBefore(" \""))
-                        .replace(Regex("\\\\([\\\\()<>])"), "$1")
+                    val url = markdownLinkDestination(text.substring(middle + 2, end))
+                    if (url == null) { append(text[i]); i++; continue }
                     pushStringAnnotation("url", url)
-                    pushStyle(SpanStyle(color = Color(0xFF2755B4), textDecoration = TextDecoration.Underline))
+                    pushStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
                     appendRange(text.substring(i + 1, middle), depth + 1); pop(); pop(); i = end + 1; continue
                 }
             }
-            val token = when { text.startsWith("**", i) -> "**"; text.startsWith("__", i) -> "__"; text[i] == '`' -> "`"; text[i] == '*' -> "*"; text[i] == '_' -> "_"; else -> null }
+            val token = when { text.startsWith("**", i) -> "**"; text.startsWith("__", i) -> "__"; text[i] == '`' -> text.substring(i).takeWhile { it=='`' }; text[i] == '*' -> "*"; text[i] == '_' -> "_"; else -> null }
             if (token != null) {
+                val codeToken = token.first() == '`'
                 // Underscores inside identifiers are literal. Use delimiter flanking, rather than
                 // pairing the first two underscores in CODEX_MOBILE_SMOKE_OK.
-                if (token != "`" && !delimiterCanOpen(text, i, token.length)) {
+                if (!codeToken && !delimiterCanOpen(text, i, token.length)) {
                     append(token); i += token.length; continue
                 }
-                var end = text.indexOf(token, i + token.length)
-                if (token != "`") {
+                var end = if(codeToken) matchingMarkdownBackticks(text,i+token.length,token.length) else text.indexOf(token, i + token.length)
+                if (!codeToken) {
                     while (end >= 0 && (isEscapedDelimiter(text, end) ||
                             !delimiterCanClose(text, end, token.length))) {
                         end = text.indexOf(token, end + token.length)
                     }
                 }
                 if (end > i + token.length) {
-                    val span = when (token) {
-                        "**", "__" -> SpanStyle(fontWeight = FontWeight.SemiBold)
-                        "`" -> SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0xFFECECEC))
+                    val span = when {
+                        codeToken -> SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)
+                        token == "**" || token == "__" -> SpanStyle(fontWeight = FontWeight.SemiBold)
                         else -> SpanStyle(fontStyle = FontStyle.Italic)
                     }
                     pushStyle(span)
                     val inner = text.substring(i + token.length, end)
-                    if (token == "`") append(inner) else appendRange(inner, depth + 1)
+                    if (codeToken) append(inner) else appendRange(inner, depth + 1)
                     pop(); i = end + token.length; continue
                 }
             }
@@ -202,7 +264,7 @@ internal fun inlineMarkdown(source: String): AnnotatedString = buildAnnotatedStr
 }
 
 /** File names can contain balanced/escaped parentheses, or be enclosed in angle brackets. */
-private fun linkDestinationEnd(text: String, start: Int): Int {
+internal fun linkDestinationEnd(text: String, start: Int): Int {
     var nesting = 0
     var angled = false
     var quoted = false
@@ -265,6 +327,11 @@ private fun isEscapedDelimiter(text: String,index: Int): Boolean {
 
 /** Small deterministic checks for debug verification; tests the actual renderer parser and spans. */
 internal fun markdownInlineSmokeChecks(): List<String> = buildList {
+    addAll(markdownImageSmokeChecks())
+    val fenced=markdownBlocks("```markdown\n![hidden](/x.png)\n```")
+    if(fenced.size!=1 || fenced.single() !is MdBlock.Code) add("image syntax must remain in fenced code")
+    val longerFence=markdownBlocks("````markdown\n```\n![hidden](/x.png)\n````")
+    if(longerFence.size!=1 || longerFence.single() !is MdBlock.Code) add("shorter fence must not end a code block")
     val identifier=inlineMarkdown("CODEX_MOBILE_SMOKE_OK")
     if(identifier.text!="CODEX_MOBILE_SMOKE_OK" || identifier.spanStyles.isNotEmpty()) add("identifier underscores")
     val italic=inlineMarkdown("_italic_")

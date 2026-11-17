@@ -31,7 +31,7 @@ class BootstrapSpec private constructor(
                 require(root.keys().asSequence().toSet() == setOf("schemaVersion", "inviteId", "enrollment", "connection", "workspace"))
                 require(root.get("schemaVersion") == 1)
                 val invite = string(root, "inviteId")
-                require(invite.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")))
+                require(invite.matches(Regex("[A-Za-z0-9_-]{16,80}")))
                 val enrollment = root.getJSONObject("enrollment")
                 require(enrollment.keys().asSequence().toSet() == setOf("host", "port", "user", "password", "fingerprint", "hostKeyAlgorithm"))
                 val connection = root.getJSONObject("connection")

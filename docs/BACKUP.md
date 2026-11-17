@@ -23,15 +23,15 @@ cd codex-cli-app
 git checkout v0.2.7
 ```
 
-继续开发使用 `main`。Mac 当前工作区为 `/Users/nanci/Documents/ChatGPT/codex cli app`，源码在 Mac 编辑后单向同步 Debian；构建、测试和 GitHub 推送仍由 Debian 完成。源码仍由 Debian 推送并核对远端提交。用户另行配置了 GitHub Actions 自动构建发布：推送匹配版本标签后在 GitHub runner 构建，详见 [GitHub 自动发布](GITHUB_RELEASE.md)。
+继续开发使用 `main` 和当前仓库工作区，源码在 Mac 编辑后单向同步 Debian；构建、测试和 GitHub 推送仍由 Debian 完成，并核对远端提交。机器上的实际工作区位置见已忽略、不得提交的 `work/local-environment.md`。用户另行配置了 GitHub Actions 自动构建发布：推送匹配版本标签后在 GitHub runner 构建，详见 [GitHub 自动发布](GITHUB_RELEASE.md)。
 
 ## 恢复构建
 
-`./scripts/build.sh` 依赖现有 BuildLab 环境：JDK 21、Android SDK 35、Gradle 缓存及 `/srv/buildlab/control/cache-env.sh`。原工程固定 AGP 8.7.3、Gradle 8.9、Kotlin 2.2.10、Compose BOM 2024.12.01。编译目标为 Java/Kotlin 17。
+`./scripts/build.sh` 使用环境变量配置构建环境：`JAVA_HOME` 指向 JDK 21，`ANDROID_HOME` 或 `ANDROID_SDK_ROOT` 指向包含 Android SDK 35 的 SDK，`GRADLE_USER_HOME` 可选，用于复用 Gradle 缓存。可通过 `CODEX_MOBILE_BUILD_ENV` 载入保存在源码目录之外的私人环境配置；不要将该配置或其中的签名凭据提交到仓库。原工程固定 AGP 8.7.3、Gradle 8.9、Kotlin 2.2.10、Compose BOM 2024.12.01。编译目标为 Java/Kotlin 17。
 
-在其他 Debian 上配置相同 JDK/SDK 后，可直接运行 `./gradlew :app:assembleDebug` 做开发检查。正式覆盖升级必须使用原签名配置，以环境变量 `CODEX_MOBILE_SIGNING_KEYSTORE`、`CODEX_MOBILE_SIGNING_PASSWORD` 提供；正式发版使用项目构建/发布脚本并递增 versionCode。
+在其他 Debian 上配置相同 JDK/SDK 后，可直接运行 `./gradlew :app:assembleDebug` 做开发检查。正式覆盖升级必须使用原签名配置：`CODEX_MOBILE_SIGNING_KEYSTORE` 指向受限签名文件，密码由 `CODEX_MOBILE_SIGNING_PASSWORD` 或指向受限密码文件的 `CODEX_MOBILE_SIGNING_PASSWORD_FILE` 提供。正式发版使用项目构建/发布脚本并递增 versionCode。
 
-现有签名文件独立保存在 Debian 受限产物目录 `/srv/buildlab/artifacts/codex-mobile/20261115-android-v01/signing/`。签名凭据不会进入 Git 历史或 Release 附件；自动构建所需的原签名仅存于仓库加密 Actions secrets。丢失原签名后，重新生成的签名无法覆盖已安装的正式包。源码备份与原签名的受限备份需要分别保管。
+现有签名文件独立保存在 Debian 受限备份目录，实际位置只记录在本机私有环境说明中。签名凭据不会进入 Git 历史或 Release 附件；自动构建所需的原签名仅存于仓库加密 Actions secrets。丢失原签名后，重新生成的签名无法覆盖已安装的正式包。源码备份与原签名的受限备份需要分别保管。
 
 ## 0.2.7 产物核对
 

@@ -1,0 +1,15 @@
+Codex 0.2.13 / versionCode 16 — 2026-11-17 (Asia/Shanghai)
+
+Android change: default to GPT-6.1 Terra with xhigh reasoning. Persist explicit model/reasoning choices per device and saved connection; do not write shared server configuration. One-time upgrade selection remains pending through disconnects and process restarts until an explicit choice or an accepted new turn. Opening an old chat does not replace the new-chat default. Switching saved connection IDs clears the prior connection's session cache.
+
+Server configuration remains independent of the APK. Model availability and context windows come from the connected server; the app does not grant access to a model provider or change another user's server configuration.
+
+Build: Debian release-01 succeeded, 75.047 seconds.
+APK SHA-256: 0a7aac0a91c33254b7f407a3ab8b89d189cb0ebbad2d623a40ac377923298abf
+APK size: 7338391 bytes.
+Signing certificate SHA-256: 12c9858dc73f6bfab725bb10ec341e3a203344f9bd8f1cea0b3874106ba25d3e
+Publication: private update channel, normal APK without activation invitation; update metadata and referenced APK were checked for consistency.
+Validation: release compilation, exact source manifest checks, original signature, package/version, non-debug/non-test-only attributes, no bootstrap asset, transfer integrity and private publication consistency.
+Android installation and functional tests: not performed. No GitHub push or public release was performed in this task.
+
+Source provenance: build-source.tar.gz and build-source-manifest.json preserve the exact APK build input. The final source ZIP includes documentation completed after compilation; source-snapshot-differences.json enumerates every difference. App/build inputs must remain identical before completion is allowed.

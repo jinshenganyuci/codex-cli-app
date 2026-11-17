@@ -1,5 +1,7 @@
 package com.nanci.codexremote.ui.shell
 
+import com.nanci.codexremote.ui.theme.NativeTheme
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
@@ -87,7 +89,7 @@ internal fun ProjectContextMenu(path: String, anchor: Rect, onDismiss: () -> Uni
 @Composable
 internal fun RemovedProjectsDialog(paths: Set<String>, onDismiss: () -> Unit, onRestore: ((String) -> Unit)?) {
     LaunchedEffect(paths.isEmpty()) { if (paths.isEmpty()) onDismiss() }
-    AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(28.dp), containerColor = Color.White,
+    AlertDialog(onDismissRequest = onDismiss, shape = RoundedCornerShape(28.dp), containerColor = NativeTheme.colors.surface,
         title = { Text("已移除的项目", fontSize = 20.sp, fontWeight = FontWeight.SemiBold) },
         text = {
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {

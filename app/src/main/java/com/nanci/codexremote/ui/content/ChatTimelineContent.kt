@@ -19,8 +19,10 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.nanci.codexremote.core.RepositoryState
+import com.nanci.codexremote.ui.theme.NativeTheme
 import kotlinx.coroutines.flow.collect
 
 /** Shared by the real chat and debug UI checks. The parent owns IME/composer insets. */
@@ -38,6 +40,7 @@ fun ChatTimelineContent(
     onOpenImage: (ImageSource) -> Unit,
     onCopyImage: (ImageSource) -> Unit,
     modifier: Modifier = Modifier,
+    topInset: Dp = 84.dp,
 ) {
     val threadId = state.selectedThread?.id
     val scroll = remember(threadId) { LazyListState() }
@@ -88,7 +91,7 @@ fun ChatTimelineContent(
         state = scroll,
         modifier = modifier.fillMaxSize().nestedScroll(manualScroll),
         // The final zero-size anchor contributes the normal 18dp item spacing.
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 84.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = topInset),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         // Restoring the same chat must leave its cached messages and scroll
@@ -97,7 +100,7 @@ fun ChatTimelineContent(
             Column(Modifier.padding(vertical = 12.dp)) {
                 repeat(if (index == 0) 2 else 3) { i ->
                     Box(Modifier.padding(vertical = 5.dp).fillMaxWidth(if (i == 2) .6f else .92f)
-                        .height(14.dp).background(Color(0xFFECECEC), RoundedCornerShape(7.dp)))
+                        .height(14.dp).background(ContentField, RoundedCornerShape(7.dp)))
                 }
             }
         }
@@ -109,25 +112,25 @@ fun ChatTimelineContent(
         items(allItems, key = { it.turnId + ":" + it.id }) { item ->
             MessageContent(item.raw, onCopy = onCopy, onPlanOpen = onPlanOpen,
                 onOpenLink = onOpenLink, onDownload = onDownload, imageLoader = imageLoader,
-                onOpenImage = onOpenImage, onCopyImage = onCopyImage)
+                onOpenImage = onOpenImage, onCopyImage = onCopyImage, imageBaseDirectory = state.selectedThread?.cwd)
         }
         state.plans[state.activeTurnId]?.let { plan -> item(key = "timeline-plan") {
-            Column(Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(16.dp)).padding(16.dp),
+            Column(Modifier.fillMaxWidth().background(NativeTheme.colors.surface, RoundedCornerShape(16.dp)).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("任务进度", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                 plan.steps.forEach { step -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(when (step.status) { "completed" -> "✓"; "inProgress", "in_progress" -> "◉"; else -> "○" }, color = Color(0xFF5D5D5D))
+                    Text(when (step.status) { "completed" -> "✓"; "inProgress", "in_progress" -> "◉"; else -> "○" }, color = ContentMuted)
                     Text(step.step, fontSize = 14.sp, lineHeight = 20.sp)
                 } }
             }
         } }
         state.turns.lastOrNull()?.error?.let { error -> item(key = "timeline-error") {
-            Text(error, color = Color(0xFFB42318), fontSize = 14.sp)
+            Text(error, color = NativeTheme.colors.danger, fontSize = 14.sp)
         } }
         if (state.activeTurnId != null) item(key = "timeline-running") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
-                Text("正在处理…", fontSize = 13.sp, color = Color(0xFF5D5D5D))
+                Text("正在处理…", fontSize = 13.sp, color = ContentMuted)
             }
         }
         item(key = "timeline-end") { Spacer(Modifier.height(0.dp)) }

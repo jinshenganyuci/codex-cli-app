@@ -344,6 +344,13 @@ private fun remoteFilePreview(file: File, name: String): FilePreview {
         val image = runCatching { ImagePipeline.decode(file.readBytes(), 2048) }.getOrNull()
         if (image != null) return FilePreview(image = image, mimeType = bounds.outMimeType?.takeIf { it.startsWith("image/") })
     }
+    if (file.length() in 1..SvgImageDecoder.MAX_SVG_BYTES.toLong()) {
+        val header=file.inputStream().use { input -> ByteArray(1024).let { bytes -> bytes.copyOf(input.read(bytes).coerceAtLeast(0)) } }
+        if (name.endsWith(".svg",ignoreCase=true) || SvgImageDecoder.isSvg(header)) {
+            val image=runCatching { ImagePipeline.decode(file.readBytes(),2048) }.getOrNull()
+            if(image!=null)return FilePreview(image=image,mimeType="image/svg+xml")
+        }
+    }
     return FilePreview(text = remoteFileTextPreview(file, name))
 }
 
@@ -354,6 +361,7 @@ private val textExtensions = setOf("txt", "md", "markdown", "json", "jsonl", "cs
 fun remoteFileMimeType(name: String): String {
     val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
     return when (extension) {
+        "svg" -> "image/svg+xml"
         "pdf" -> "application/pdf"
         "doc" -> "application/msword"
         "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"

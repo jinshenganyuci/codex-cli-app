@@ -21,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -33,15 +32,19 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.sp
+import com.nanci.codexremote.ui.theme.NativeTheme
+import com.nanci.codexremote.ui.theme.NativeTypography
+import com.nanci.codexremote.ui.theme.nativeShadow
 
 private fun reasoningLabel(value: String) = when (value.lowercase()) { "none" -> "无"; "minimal" -> "最低"; "low" -> "低"; "medium" -> "中"; "high" -> "高"; "xhigh" -> "极高"; "max" -> "Max"; "ultra" -> "Ultra"; else -> value }
 private fun permissionGlyph(value: ShellPermission) = when (value) { ShellPermission.Default -> "hand"; ShellPermission.AutoReview -> "shield"; ShellPermission.ReadOnly -> "readonly"; ShellPermission.FullAccess -> "warning"; ShellPermission.Custom -> "settings" }
@@ -72,7 +75,7 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
     val horizontalInsets = composerHorizontalPadding(editingProgress, consumedInsets)
     val direction = LocalLayoutDirection.current
     val textMeasurer = rememberTextMeasurer()
-    val editorTextStyle = TextStyle(color = ShellInk, fontSize = 16.sp, lineHeight = 24.sp)
+    val editorTextStyle = NativeTypography.body16.copy(color = ShellInk)
     // The APK's ordinary rci0/jci0 layout uses a separate 100ms transition. Both animations
     // observe the same IME target, so collapsing never waits for the keyboard's final frame.
     val layoutProgress by animateFloatAsState(
@@ -92,8 +95,7 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
         keyboard?.hide()
         actions.onAttachment(action)
     })
-    val validAttachments = state.attachments.all { !it.loading && it.error == null }
-    val canSend = state.enabled && !state.submitting && validAttachments && (state.text.isNotBlank() || state.attachments.isNotEmpty())
+    val canSend = composerCanSend(state)
     LaunchedEffect(state.focusRequest) {
         if (state.focusRequest > 0) {
             ime.focusSession.onFocusRequest()
@@ -131,15 +133,10 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
         // measure/place transition, not an exact radius animation curve.
         val composerShape = RoundedCornerShape((30f + (24f - 30f) * expansion).dp)
         Surface(
-            Modifier.fillMaxWidth().padding(horizontalInsets.current).shadow(
-                elevation = 20.dp,
-                shape = composerShape,
-                clip = false,
-                ambientColor = Color.Black.copy(alpha = .05f),
-                spotColor = Color.Black.copy(alpha = .03f),
-            ),
+            Modifier.fillMaxWidth().padding(horizontalInsets.current)
+                .nativeShadow(composerShape, 90.dp, Color.Black.copy(alpha = .20f)),
             shape = composerShape,
-            color = Color.White,
+            color = NativeTheme.colors.surface,
             shadowElevation = 0.dp,
             tonalElevation = 0.dp,
         ) {
@@ -155,7 +152,7 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                         }
                         if (state.planMode) {
                             Row(Modifier.padding(start = 8.dp, top = 2.dp, bottom = 6.dp).clip(CircleShape).background(ShellField).clickable { actions.onPlanMode(false) }.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                ShellGlyph("plan", Modifier.size(16.dp), ShellMuted); Spacer(Modifier.width(6.dp)); Text("计划", color = ShellInk, fontSize = 14.sp, lineHeight = 20.sp); Spacer(Modifier.width(6.dp)); ShellGlyph("x", Modifier.size(14.dp), ShellMuted)
+                                ShellGlyph("plan", Modifier.size(16.dp), ShellMuted); Spacer(Modifier.width(6.dp)); Text("计划", color = ShellInk, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = .1.sp); Spacer(Modifier.width(6.dp)); ShellGlyph("x", Modifier.size(14.dp), ShellMuted)
                             }
                         }
                     }
@@ -172,7 +169,7 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                         onValueChange = actions.onTextChange,
                         enabled = state.editorEnabled,
                         textStyle = editorTextStyle,
-                        cursorBrush = SolidColor(Color(0xFF3566F0)),
+                        cursorBrush = SolidColor(NativeTheme.colors.accent),
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                         minLines = 1,
                         // Keep the same editor and line policy while the card changes its measured
@@ -183,7 +180,7 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                         }.observeComposerEditorTouch(ime.focusSession, state.editorEnabled).padding(horizontal = 8.dp, vertical = 8.dp),
                         decorationBox = { field ->
                             Box {
-                                if (state.text.isEmpty()) Text(state.placeholder, color = Color(0xFF969696), fontSize = 16.sp, lineHeight = 24.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (state.text.isEmpty()) Text(state.placeholder, color = NativeTheme.colors.tertiary, style = NativeTypography.body16, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 field()
                             }
                         },
@@ -193,8 +190,8 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                     Box(if (controlsInteractive) Modifier else Modifier.clearAndSetSemantics { }) {
                         ComposerIconButton(permissionGlyph(state.permission), permissionLabel(state.permission), { permissionMenu = true },
                             tint = if (state.permission == ShellPermission.FullAccess) Color(0xFFB27A25) else ShellMuted,
-                            enabled = controlsInteractive && state.permissions.isNotEmpty(), dimWhenDisabled = state.permissions.isEmpty())
-                        ShellMenu(permissionMenu, { permissionMenu = false }, Modifier.width(300.dp), preserveEditorFocus = true) {
+                            enabled = controlsInteractive && state.permissions.isNotEmpty(), dimWhenDisabled = state.permissions.isEmpty(), size = 34.dp)
+                        ShellMenu(permissionMenu, { permissionMenu = false }, preserveEditorFocus = true, anchorGap = 12.dp) {
                             state.permissions.forEach { permission ->
                                 MenuRow(permissionLabel(permission), permissionGlyph(permission), permissionDescription(permission), checked = state.permission == permission, color = ShellInk) {
                                     permissionMenu = false; actions.onPermission(permission)
@@ -205,14 +202,14 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                 },
                 model = {
                     Box(if (controlsInteractive) Modifier else Modifier.clearAndSetSemantics { }) {
-                        Row(Modifier.heightIn(min = 34.dp).widthIn(max = 205.dp).clip(CircleShape).clickable(enabled = controlsInteractive && state.models.isNotEmpty()) {
+                        Row(Modifier.heightIn(min = 34.dp).clip(CircleShape).clickable(enabled = controlsInteractive && state.models.isNotEmpty()) {
                             modelParent = 0; modelMenu = if (selectedModel?.reasoning?.isNotEmpty() == true) 1 else 2
                         }.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             val shortModel = modelLabel.removePrefix("GPT-")
                             val reason = reasoningLabel(state.reasoning)
-                            Text(listOf(shortModel, reason).filter { it.isNotBlank() }.joinToString(" "), color = if (state.models.isNotEmpty()) ShellInk else ShellMuted, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(listOf(shortModel, reason).filter { it.isNotBlank() }.joinToString(" "), color = if (state.models.isNotEmpty()) ShellInk else ShellMuted, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = .1.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        ShellMenu(modelMenu > 0, { modelMenu = 0; modelParent = 0 }, Modifier.width(if (modelMenu == 1) 224.dp else 292.dp), preserveEditorFocus = true) {
+                        ShellMenu(modelMenu > 0, { modelMenu = 0; modelParent = 0 }, preserveEditorFocus = true) {
                             when (modelMenu) {
                                 1 -> {
                                     selectedModel?.reasoning.orEmpty().forEach { reason -> MenuRow(reasoningLabel(reason), checked = state.reasoning == reason) { actions.onReasoning(reason); modelMenu = 0 } }
@@ -246,24 +243,24 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
 }
 
 @Composable private fun ComposerIconButton(glyph: String, label: String, action: () -> Unit, tint: Color = ShellInk,
-    enabled: Boolean = true, dimWhenDisabled: Boolean = true) {
-    Box(Modifier.size(36.dp).clip(CircleShape).clickable(enabled=enabled,onClick = action), contentAlignment = Alignment.Center) {
+    enabled: Boolean = true, dimWhenDisabled: Boolean = true, size: Dp = 36.dp) {
+    Box(Modifier.size(size).clip(CircleShape).clickable(enabled=enabled,onClick = action), contentAlignment = Alignment.Center) {
         ShellGlyph(glyph,Modifier.size(24.dp),if(enabled || !dimWhenDisabled) tint else tint.copy(alpha=.35f),label)
     }
 }
 
-@Composable private fun ComposerPrimaryButton(state: ComposerState, canSend: Boolean, actions: ComposerActions, send: () -> Unit) {
-    when {
-        state.submitting -> Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = ShellInk) }
-        state.running && state.text.isBlank() -> Box(Modifier.size(36.dp).clip(CircleShape).background(Color.Black).clickable(onClick = actions.onStop), contentAlignment = Alignment.Center) { ShellGlyph("stop", Modifier.size(24.dp), Color.White, "停止") }
-        state.text.isNotBlank() || state.attachments.isNotEmpty() -> Box(Modifier.size(36.dp).clip(CircleShape).background(if (canSend) Color.Black else Color(0xFFE3E3E3)).clickable(enabled = canSend, onClick = send), contentAlignment = Alignment.Center) { ShellGlyph("send", Modifier.size(22.dp), if (canSend) Color.White else Color(0xFFA8A8A8), "发送") }
+@Composable internal fun ComposerPrimaryButton(state: ComposerState, canSend: Boolean, actions: ComposerActions, send: () -> Unit) {
+    when (composerPrimaryAction(state)) {
+        ComposerPrimaryAction.Submitting -> Box(Modifier.size(36.dp).testTag("composer-primary-submitting"), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = ShellInk) }
+        ComposerPrimaryAction.Stop -> Box(Modifier.size(36.dp).testTag("composer-primary-stop").clip(CircleShape).background(ShellInk).clickable(onClick = actions.onStop), contentAlignment = Alignment.Center) { ShellGlyph("stop", Modifier.size(24.dp), NativeTheme.colors.surface, "停止") }
+        ComposerPrimaryAction.Send -> Box(Modifier.size(36.dp).testTag("composer-primary-send").clip(CircleShape).background(if (canSend) ShellInk else ShellField).clickable(enabled = canSend, onClick = send), contentAlignment = Alignment.Center) { ShellGlyph("send", Modifier.size(22.dp), if (canSend) NativeTheme.colors.surface else NativeTheme.colors.tertiary, "发送") }
         // The original mic/waveform actions are deliberately omitted; no fake send button in idle state.
-        else -> Spacer(Modifier.width(6.dp))
+        ComposerPrimaryAction.Idle -> Spacer(Modifier.width(6.dp))
     }
 }
 
 @Composable private fun AttachmentMenu(expanded: Boolean, dismiss: () -> Unit, state: ComposerState, actions: ComposerActions) {
-    ShellMenu(expanded, dismiss, Modifier.width(290.dp),preserveEditorFocus=true) {
+    ShellMenu(expanded, dismiss, preserveEditorFocus = true) {
         if (state.allowCamera) MenuRow("拍照", "camera") { dismiss(); actions.onAttachment(AttachmentAction.Camera) }
         if (state.allowPhotos) MenuRow("上传照片", "photos") { dismiss(); actions.onAttachment(AttachmentAction.Photos) }
         if (state.allowFiles) MenuRow("上传文件", "file") { dismiss(); actions.onAttachment(AttachmentAction.Files) }
@@ -279,10 +276,10 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
         } else {
             Row(Modifier.fillMaxSize().padding(start = 12.dp, end = 28.dp), verticalAlignment = Alignment.CenterVertically) {
                 ShellGlyph("file", Modifier.size(24.dp), ShellMuted); Spacer(Modifier.width(8.dp))
-                Column { Text(attachment.label, color = ShellInk, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis); if (attachment.error != null) Text(attachment.error, color = Color(0xFFD91843), fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1) }
+                Column { Text(attachment.label, color = ShellInk, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = .2.sp, maxLines = 2, overflow = TextOverflow.Ellipsis); if (attachment.error != null) Text(attachment.error, color = NativeTheme.colors.danger, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1) }
             }
         }
         if (attachment.loading) CircularProgressIndicator(Modifier.size(24.dp).align(Alignment.Center), strokeWidth = 2.dp, color = ShellInk)
-        Box(Modifier.padding(4.dp).size(23.dp).align(Alignment.TopEnd).clip(CircleShape).background(Color.White.copy(alpha = .92f)).clickable(onClick = onRemove), contentAlignment = Alignment.Center) { ShellGlyph("x", Modifier.size(16.dp), description = "移除 ${attachment.label}") }
+        Box(Modifier.padding(4.dp).size(23.dp).align(Alignment.TopEnd).clip(CircleShape).background(NativeTheme.colors.surface.copy(alpha = .92f)).clickable(onClick = onRemove), contentAlignment = Alignment.Center) { ShellGlyph("x", Modifier.size(16.dp), description = "移除 ${attachment.label}") }
     }
 }

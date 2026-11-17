@@ -34,6 +34,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     val repo = CodexRepository()
     val store = ConnectionStore(app)
     private val prefs = app.getSharedPreferences("ui-state", 0)
+    private val modelPreferences = ModelPreferences(app)
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
     var state by mutableStateOf(repo.state); private set
@@ -44,8 +45,8 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf<String?>(null)
     var draft by mutableStateOf(""); private set
     var attachments by mutableStateOf(emptyList<DraftAttachment>()); private set
-    var model by mutableStateOf("")
-    var effort by mutableStateOf("")
+    var model by mutableStateOf(ModelSelection().model); private set
+    var effort by mutableStateOf(ModelSelection().effort); private set
     var planMode by mutableStateOf(false)
     var permission by mutableStateOf(ShellPermission.Default)
     var fast by mutableStateOf(false)
@@ -67,7 +68,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
         result
     }
-    fun imageOwner():String=activeConnection?.let {listOf(it.id,it.profile.host,it.profile.port.toString(),it.profile.user,it.profile.fingerprint).joinToString("\u0000")} ?: "no-connection"
+    fun imageOwner():String=activeConnection?.ownerKey ?: "no-connection"
+    // Existing records keep their on-device draft keys. Replacing credentials creates a fresh space.
+    private fun draftOwner():String?=activeConnection?.let { if(it.credentialRevision.isEmpty()) it.id else it.identityKey }
     fun copyImage(source:ImageSource) {
         images.clipboardFile(imageOwner(),source).whenComplete {file,error ->
             if(error!=null)message=safeError(error)
@@ -117,7 +120,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     val editingHomeDraftWhileCreating: Boolean
         get() = creating && homeDraftTransferOwner == imageOwner()
     val editorDraftReady: Boolean
-        get() = ComposerConnectionPolicy.editorReady(activeConnection?.id, home, creating,
+        get() = ComposerConnectionPolicy.editorReady(draftOwner(), home, creating,
             editingHomeDraftWhileCreating, draftKey, state.selectedThread?.id, selectionId)
     private var reconnectCount = 0
     private var manualDisconnect = false
@@ -131,6 +134,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private var attachmentReadSequence=0L
     private val subscription = repo.addListener { incoming ->
         val wasConnected = state.connected
+        val modelsChanged = incoming.models != state.models
         val previousError=state.lastError
         val refreshDiff=incoming.selectedThread?.id!=state.selectedThread?.id ||
             incoming.selectedThread?.cwd!=state.selectedThread?.cwd ||
@@ -147,8 +151,8 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
         state = incoming
         replacements.forEach { (old,new) ->
-            val oldKey="${activeConnection?.id}:$old"
-            val newKey="${activeConnection?.id}:$new"
+            val oldKey="${draftOwner()}:$old"
+            val newKey="${draftOwner()}:$new"
             val saved=if(draftKey==oldKey)draft else prefs.getString("draft:$oldKey",null)
             prefs.edit().apply { if(saved!=null)putString("draft:$newKey",saved);remove("draft:$oldKey") }.apply()
             if(draftKey==oldKey) {
@@ -159,12 +163,12 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             }
             for(index in waitingAttachments.indices) {
                 val pending=waitingAttachments[index]
-                if(pending.connection==activeConnection?.id && pending.thread==old)
+                if(pending.connection==draftOwner() && pending.thread==old)
                     waitingAttachments[index]=pending.copy(thread=new)
             }
         }
         if(newlyDeleted.isNotEmpty()) {
-            val connectionId=activeConnection?.id
+            val connectionId=draftOwner()
             val deletedDraftKeys=newlyDeleted.map {"$connectionId:$it"}.toSet()
             val editor=prefs.edit()
             deletedDraftKeys.forEach {editor.remove("draft:$it")}
@@ -175,6 +179,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 // Do not persist the deleted draft again when returning to the list.
                 selectionId=null;home=true;creating=false;attachments=emptyList();stagedAsync=emptyMap()
                 draftKey="$connectionId:new";draft=prefs.getString("draft:$draftKey","").orEmpty()
+                restoreModelDefaults()
             } else if(draftKey in deletedDraftKeys) {
                 draft=""
             }
@@ -186,38 +191,49 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             if (thread.id != selectionId) {
                 persistDraft()
                 selectionId = thread.id
-                draftKey = "${activeConnection?.id}:${thread.id}"
+                draftKey = "${draftOwner()}:${thread.id}"
                 if(creating && homeDraftTransferOwner==imageOwner()) {
                     // Carry the live draft, not a pre-upload snapshot which could restore
                     // an obsolete loading attachment after its upload has completed.
                     persistDraft()
                     for(index in waitingAttachments.indices) {
                         val pending=waitingAttachments[index]
-                        if(pending.connection==activeConnection?.id)waitingAttachments[index]=pending.copy(thread=thread.id)
+                        if(pending.connection==draftOwner())waitingAttachments[index]=pending.copy(thread=thread.id)
                     }
                 } else {
                     draft = prefs.getString("draft:$draftKey", "") ?: ""
-                    val retained=waitingAttachments.filter {it.connection==activeConnection?.id && it.thread==thread.id}.map {it.id}.toSet()
+                    val retained=waitingAttachments.filter {it.connection==draftOwner() && it.thread==thread.id}.map {it.id}.toSet()
                     attachments=attachments.filter {it.id in retained}
                     waitingAttachments.removeAll {it.id !in retained}
                 }
                 // A newly-created thread inherits server defaults, but the unsent composer already
                 // holds the user's choices. Preserve those choices (including any newer edits).
                 if (!creating) {
-                    model = incoming.threadSettings?.optString("model")?.takeIf { it.isNotBlank() } ?: thread.model ?: ""
-                    effort = (incoming.threadSettings?.optString("effort")?.takeUnless {it=="null"} ?: thread.raw.optString("reasoningEffort", "")).takeUnless {it=="null"}.orEmpty()
+                    if(modelPreferences.initialChoicePending(activeConnection)) {
+                        // Opening an old chat during the upgrade must not undo Terra / xhigh.
+                        // Keep the marker until a turn is accepted or the user chooses explicitly.
+                        restoreModelDefaults(incoming.models)
+                    } else {
+                        val defaults = modelPreferences.read(activeConnection).available(incoming.models)
+                        model = incoming.threadSettings?.optString("model")?.takeIf { it.isNotBlank() && it!="null" }
+                            ?: thread.model?.takeIf { it.isNotBlank() } ?: defaults.model
+                        effort = incoming.threadSettings?.optString("effort")?.takeIf { it.isNotBlank() && it!="null" }
+                            ?: thread.raw.optString("reasoningEffort", "").takeIf { it.isNotBlank() && it!="null" }
+                            ?: ModelSelection(model, defaults.effort).available(incoming.models).effort
+                    }
                     planMode = incoming.threadSettings?.optJSONObject("collaborationMode")?.optString("mode") == "plan"
                     fast = incoming.threadSettings?.optString("serviceTier")=="priority"
                     permission = shellPermission(PermissionCapabilities.current(incoming.threadSettings))
                 }
             }
         }
-        if (model.isBlank()) model = incoming.models.firstOrNull { it.isDefault }?.model ?: incoming.models.firstOrNull()?.model ?: ""
+        if (modelsChanged && home) restoreModelDefaults(incoming.models)
+        else if (modelsChanged && creating) applyModelSelection(ModelSelection(model, effort).available(incoming.models))
         if (incoming.connected) reconnectCount = 0
         if (wasConnected && !incoming.connected && !manualDisconnect) scheduleReconnect()
         if(incoming.connected && !incoming.loadingThread) {
             waitingAttachments.removeAll {pending->attachments.none {it.id==pending.id}}
-            val ready=waitingAttachments.filter {it.connection==activeConnection?.id && it.thread==incoming.selectedThread?.id}
+            val ready=waitingAttachments.filter {it.connection==draftOwner() && it.thread==incoming.selectedThread?.id}
             waitingAttachments.removeAll(ready.toSet())
             ready.forEach {readAttachment(it.uri,it.id)}
         }
@@ -226,20 +242,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     val bootstrap = BootstrapCoordinator(app, store) { saved, initialWorkspace ->
         reloadConnections()
+        restoreModelDefaults(emptyList())
         workspace = initialWorkspace
         connect(saved)
     }
 
     init {
         reloadConnections()
-        draftKey="${activeConnection?.id}:new"
+        restoreModelDefaults(emptyList())
+        draftKey="${draftOwner()}:new"
         draft=prefs.getString("draft:$draftKey","").orEmpty()
-        runCatching { workspace = store.workspace }.onFailure { message = "无法读取工作目录" }
+        runCatching { workspace = activeConnection?.let(store::workspaceFor).orEmpty() }.onFailure { message = "无法读取工作目录" }
         bootstrap.start()
     }
 
     fun reloadConnections() {
-        try { connections = store.list(); activeConnection = connections.firstOrNull { it.id == store.activeId }; files.onOwnerChanged() }
+        try { connections = store.list();modelPreferences.migrate(connections); activeConnection = connections.firstOrNull { it.id == store.activeId };workspace=activeConnection?.let(store::workspaceFor).orEmpty();files.onOwnerChanged() }
         catch(e:Exception) { message = e.message ?: "读取连接失败" }
     }
     fun saveConnection(profile:ConnectionProfile, secret:SshCredential?, id:String?):Boolean {
@@ -248,28 +266,35 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         finally { secret?.close() }
     }
     fun removeConnection(id:String) {
-        try { if(activeConnection?.id==id) { manualDisconnect=true;connectAttempt++;repo.disconnect() }; store.remove(id); reloadConnections(); home=true }
+        try {
+            persistDraft()
+            if(activeConnection?.id==id) { manualDisconnect=true;connectAttempt++;repo.disconnect(clearSession=true);selectionId=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap() }
+            store.remove(id);reloadConnections();home=true;creating=false;homeDraftTransferOwner=null
+            draftKey="${draftOwner()}:new";draft=prefs.getString("draft:$draftKey","").orEmpty();restoreModelDefaults(emptyList())
+        }
         catch(e:Exception) { message=e.message ?: "删除连接失败" }
     }
     fun connect(saved:SavedConnection?=activeConnection,force:Boolean=false,silent:Boolean=false) {
         if(saved==null) return
         val sameRecord=activeConnection?.id==saved.id
-        val sameOwner=ComposerConnectionPolicy.sameOwner(activeConnection?.profile,saved.profile)
+        val sameOwner=activeConnection?.ownerKey==saved.ownerKey
         if(!force && sameRecord && sameOwner && state.connection.status in setOf(ConnectionStatus.CONNECTING,ConnectionStatus.INITIALIZING)) {
             activeConnection=saved
             return
         }
         try {
-            val secret=store.loadCredential(saved.id) ?: throw IllegalStateException("请先导入连接密钥或填写密码")
+            val secret=store.loadCredential(saved) ?: throw IllegalStateException("请先导入连接密钥或填写密码")
             try {
                 val attempt=++connectAttempt
                 reconnectTask?.let(main::removeCallbacks);reconnectTask=null;reconnectScheduled=false
                 persistDraft(); store.setActive(saved.id)
                 val switching=!sameRecord || !sameOwner
-                if(switching) { manualDisconnect=true;repo.disconnect();selectionId=null;home=true;creating=false;homeDraftTransferOwner=null;attachments=emptyList();waitingAttachments.clear();model="";effort="";planMode=false;permission=ShellPermission.Custom;draftKey="${saved.id}:new";draft=if(sameRecord)"" else prefs.getString("draft:$draftKey","").orEmpty() }
+                if(switching) { manualDisconnect=true;repo.disconnect();selectionId=null;home=true;creating=false;homeDraftTransferOwner=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap();planMode=false;fast=false;permission=ShellPermission.Custom }
                 else if(force) {manualDisconnect=true;repo.disconnect()}
                 activeConnection=saved;files.onOwnerChanged();manualDisconnect=false;message=null
-                repo.connect(saved.profile,secret).whenComplete { _,error -> if(attempt==connectAttempt && activeConnection?.id==saved.id && error!=null) {if(!silent)message=safeError(error);scheduleReconnect()} }
+                workspace=store.workspaceFor(saved)
+                if(switching) {draftKey="${draftOwner()}:new";draft=prefs.getString("draft:$draftKey","").orEmpty();restoreModelDefaults(emptyList())}
+                repo.connect(saved.profile,secret,resetSession=switching).whenComplete { _,error -> if(attempt==connectAttempt && activeConnection?.ownerKey==saved.ownerKey && error!=null) {if(!silent)message=safeError(error);scheduleReconnect()} }
             } finally {secret.close()}
         } catch(e:Exception) { message=e.message ?: "连接失败" }
     }
@@ -290,6 +315,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     fun newChat(focus:Boolean=false) {
         if(!state.connected) { message="请先连接服务器"; return }
         if(creating)return
+        if(!home)restoreModelDefaults()
         val owner=imageOwner()
         val keepExistingEditorFocus=focus && home
         homeDraftTransferOwner=owner.takeIf {keepExistingEditorFocus}
@@ -320,7 +346,24 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-    fun showHome() { homeDraftTransferOwner=null;persistDraft(); home=true; draftKey="${activeConnection?.id}:new"; draft=prefs.getString("draft:$draftKey","").orEmpty();attachments=emptyList();waitingAttachments.clear();if(state.connected) observe(repo.refreshThreads()) }
+    fun showHome() { homeDraftTransferOwner=null;persistDraft(); home=true; restoreModelDefaults();draftKey="${draftOwner()}:new"; draft=prefs.getString("draft:$draftKey","").orEmpty();attachments=emptyList();waitingAttachments.clear();if(state.connected) observe(repo.refreshThreads()) }
+    private fun applyModelSelection(selection:ModelSelection) { model=selection.model;effort=selection.effort }
+    private fun restoreModelDefaults(models:List<ModelInfo> = state.models) {
+        applyModelSelection(modelPreferences.read(activeConnection).available(models))
+    }
+    private fun rememberModelSelection(selection:ModelSelection) {
+        val connection=activeConnection ?: return
+        try { modelPreferences.save(connection,selection);applyModelSelection(selection) }
+        catch(e:Exception) { message=e.message ?: "无法保存默认模型" }
+    }
+    fun selectModel(value:String) {
+        if(state.models.none {it.model==value})return
+        rememberModelSelection(ModelSelection(value,effort).available(state.models))
+    }
+    fun selectEffort(value:String) {
+        if(state.models.firstOrNull {it.model==model}?.efforts?.contains(value)!=true)return
+        rememberModelSelection(ModelSelection(model,value))
+    }
     fun changeDraft(text:String) { draft=text; persistDraft() }
     private fun persistDraft() { prefs.edit().putString("draft:$draftKey",draft).apply() }
     fun updateGrouping(value:ThreadGrouping) { grouping=value; prefs.edit().putString("grouping",value.name).apply() }
@@ -344,9 +387,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun updateWorkspace(path:String) {
         if(path.isNotBlank() && !path.startsWith('/')) { message="工作目录需要是服务器上的绝对路径"; return }
-        try { store.workspace=path; workspace=path } catch(e:Exception) { message=e.message }
+        val connection=activeConnection ?: run {message="请先选择服务器连接";return}
+        try { store.setWorkspace(connection,path); workspace=path } catch(e:Exception) { message=e.message }
     }
-    private fun pinKey(id:String) = "${activeConnection?.id}:$id"
+    private fun pinKey(id:String) = "${draftOwner()}:$id"
     private fun threadSummary(id:String)=state.threads.firstOrNull {it.id==id} ?: state.selectedThread?.takeIf {it.id==id}
     fun isPinned(id:String):Boolean {
         val section=threadSummary(id)?.sectionId
@@ -394,6 +438,13 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             if(owner==imageOwner())message="聊天已永久删除"
             result
         }
+    fun prepareThreadDeletion(id:String,owner:String=imageOwner()):CompletableFuture<ThreadDeletionPlan> =
+        threadMutation(owner) {repo.prepareThreadDeletion(id)}
+    fun deleteThread(plan:ThreadDeletionPlan,owner:String=imageOwner()):CompletableFuture<JSONObject> =
+        threadMutation(owner) {repo.deleteThread(plan)}.thenApply { result ->
+            if(owner==imageOwner())message=if(plan.threads.size==1)"聊天已永久删除" else "已永久删除 ${plan.threads.size} 个聊天"
+            result
+        }
     fun markThreadUnread(id:String,owner:String=imageOwner()):CompletableFuture<JSONObject> = threadMutation(owner) {
         val ready=if(state.readStates[id]!=null)CompletableFuture.completedFuture(JSONObject()) else repo.refreshThreadReadState(id)
         ready.thenCompose {
@@ -421,15 +472,13 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     fun send() {
         val ready=if(home)state.connected&&!state.sending else state.canSend
         if(!ready || !editorDraftReady || creating || attachments.any { it.loading || it.error!=null } || (draft.isBlank() && attachments.isEmpty())) return
-        if (permission != ShellPermission.Custom) {
-            PermissionCapabilities.disabledReason(state, permissionPreset(permission), model)?.let { message=it; return }
-        }
+        if (!composerPermissionsReady()) return
         if(home || state.selectedThread==null) {
             val initial=draft; val pending=attachments
-            val connectionId=activeConnection?.id
+            val connectionOwner=imageOwner()
             creating=true; home=false
             observe(repo.newThread(workspace.takeIf { it.isNotBlank() }, model.takeIf { it.isNotBlank() })) { result ->
-                if (activeConnection?.id != connectionId || home || state.selectedThread?.id != result.optJSONObject("thread")?.optString("id")) {
+                if (imageOwner() != connectionOwner || home || state.selectedThread?.id != result.optJSONObject("thread")?.optString("id")) {
                     creating=false
                     return@observe
                 }
@@ -439,7 +488,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
         val sentText=draft; val sentAttachments=attachments
         val id=state.selectedThread?.id
+        val connection=activeConnection
+        val startsNewTurn=state.activeTurnId==null
         observe(repo.sendMessage(sentText, sentAttachments.mapNotNull { it.input }, options())) {
+            // Steering an existing turn cannot change its model; consume only an accepted turn/start.
+            if(startsNewTurn)acceptedInitialModelChoice(connection)
             if(state.selectedThread?.id==id) {
                 if(draft==sentText) changeDraft("")
                 attachments=attachments.filterNot { a -> sentAttachments.any { it.id==a.id } }
@@ -447,6 +500,16 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun availablePermissions(): List<ShellPermission> = PermissionCapabilities.available(state, model).map(::shellPermission)
+
+    private fun composerPermissionsReady():Boolean {
+        if(permission==ShellPermission.Custom)return true
+        val reason=PermissionCapabilities.disabledReason(state,permissionPreset(permission),model)
+        if(reason!=null) {message=reason;return false}
+        return true
+    }
+    private fun acceptedInitialModelChoice(connection:SavedConnection?) {
+        if(connection!=null)runCatching {modelPreferences.initialChoiceUsed(connection)}.onFailure {message=it.message}
+    }
 
     fun selectPermission(value: ShellPermission) {
         PermissionCapabilities.disabledReason(state, permissionPreset(value), model)?.let { message=it; return }
@@ -481,24 +544,34 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             if(!feedback.isNullOrBlank() && state.selectedThread?.id==thread) observe(repo.sendMessage(feedback))
         }
     }
-    fun implementPlan(id:String) { observe(repo.implementPlan(id)) { dismissPlan(id); planMode=false } }
-    fun revisePlan(id:String,text:String) { observe(repo.revisePlan(id,text)) { dismissPlan(id); planMode=true } }
+    fun implementPlan(id:String) = submitPlan(id,false) { selected -> repo.implementPlan(id,selected) }
+    fun revisePlan(id:String,text:String) = submitPlan(id,true) { selected -> repo.revisePlan(id,text,selected) }
+    private fun submitPlan(id:String,revising:Boolean,submit:(TurnOptions)->CompletableFuture<JSONObject>) {
+        if(!state.canSend || !composerPermissionsReady())return
+        val connection=activeConnection
+        // All new-turn entrances use the visible composer settings. Only plan/default mode differs.
+        observe(submit(options())) {
+            acceptedInitialModelChoice(connection)
+            dismissPlan(id)
+            planMode=revising
+        }
+    }
 
     fun attach(uri:Uri) {
         if(activeConnection==null) { message="请先添加服务器连接"; return }
         val id=UUID.randomUUID().toString()
         attachments=attachments+DraftAttachment(id,"正在读取…")
         if(!state.connected || state.loadingThread) {
-            waitingAttachments+=PendingAttachment(uri,activeConnection?.id,state.selectedThread?.id,id)
+            waitingAttachments+=PendingAttachment(uri,draftOwner(),state.selectedThread?.id,id)
             attachments=attachments.map {if(it.id==id)it.copy(label="等待连接恢复…") else it}
             if(appVisible && state.connection.status==ConnectionStatus.DISCONNECTED)connect()
         } else readAttachment(uri,id)
     }
     private fun readAttachment(uri:Uri,id:String) {
         if(attachments.none {it.id==id})return
-        val connection=activeConnection?.id;val owner=imageOwner()
+        val connection=draftOwner();val owner=imageOwner()
         val read=++attachmentReadSequence;attachmentReads[id]=read
-        fun isCurrent()=connection==activeConnection?.id && owner==imageOwner() &&
+        fun isCurrent()=connection==draftOwner() && owner==imageOwner() &&
             attachmentReads[id]==read && attachments.any {it.id==id}
         attachments=attachments.filterNot {it.id==id}+DraftAttachment(id,"正在读取…")
         io.execute {
@@ -568,8 +641,8 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }.whenComplete { summary,parseError -> main.post {
                     if(!disposed && sequence==diffSequence && context==workingDiffContext()) {
-                        if(parseError==null && ((error==null && result?.status!=WorkingTreeDiffStatus.UNAVAILABLE) || fallback!=null))
-                            changedFiles=summary
+                        // An unavailable refresh must not keep yesterday's counts looking current.
+                        changedFiles=if(parseError==null && ((error==null && result?.status!=WorkingTreeDiffStatus.UNAVAILABLE) || fallback!=null))summary else null
                     }
                 } }
             }

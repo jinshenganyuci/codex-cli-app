@@ -237,7 +237,16 @@ class Registry:
         for path in sorted(self.invites.glob('*.json')):
             record = self._load(path.stem)
             if record['target_user'] == target and record['state'] in ('binding', 'active'):
-                rows.append('restrict ' + record['public_key'] + ' codex-mobile-invite:' + record['invite_id'] + '\n')
+                options = 'restrict'
+                # Administrator-only policy in the root-owned invitation record.
+                # Enrollment requests cannot set this field. Keep the forced
+                # command when later enrollment/revocation regenerates the file.
+                command = record.get('ssh_forced_command')
+                if command is not None:
+                    if not isinstance(command, str) or not re.fullmatch(r'/usr/local/libexec/codex-mobile-[a-z0-9-]{1,64}', command):
+                        reject('unavailable')
+                    options += ',command="' + command + '"'
+                rows.append(options + ' ' + record['public_key'] + ' codex-mobile-invite:' + record['invite_id'] + '\n')
         self._atomic(destination, (KEYS_HEADER + ''.join(rows)).encode(), 0o644)
 
     def issue(self, enrollment_user: str, enrollment_uid: int, target_user: str, target_uid: int,

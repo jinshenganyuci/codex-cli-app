@@ -16,6 +16,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clip
+import com.nanci.codexremote.ui.theme.NativeTheme
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -41,11 +43,12 @@ fun RemoteFileSheet(state: RemoteFileState, onDismiss: () -> Unit, onDownload: (
             .map { insets?.getRoundedCorner(it)?.radius ?: 0 }
         if (corners.first() > 0 && corners.distinct().size == 1) with(density) { corners.first().toDp() } else 24.dp
     } else 24.dp
-    val ink = Color(0xFF0D0D0D)
-    val muted = Color(0xFF6B6B6B)
+    val colors = NativeTheme.colors
+    val ink = colors.ink
+    val muted = colors.muted
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, sheetMaxWidth = 640.dp,
         shape = RoundedCornerShape(topStart = radius, topEnd = radius), dragHandle = null,
-        containerColor = Color.White, contentColor = ink) {
+        containerColor = colors.surface, contentColor = ink) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 24.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -80,7 +83,9 @@ fun RemoteFileSheet(state: RemoteFileState, onDismiss: () -> Unit, onDownload: (
                     if (state.image != null) BoxWithConstraints(Modifier.fillMaxWidth()) {
                         val height = (maxWidth * (state.image.height.toFloat() / state.image.width)).coerceIn(48.dp, 360.dp)
                         Image(state.image.asImageBitmap(), state.displayName,
-                            Modifier.fillMaxWidth().height(height).clickable(onClickLabel = "全屏查看图像", onClick = onOpenImage))
+                            // p2e1 uses Shapes.small; default provider ccz0.b/wcz0.h is 8dp.
+                            Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(8.dp))
+                                .clickable(onClickLabel = "全屏查看图像", onClick = onOpenImage))
                     } else if (state.text != null) SelectionContainer {
                         Text(state.text, Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
                             fontFamily = FontFamily.Monospace, fontSize = 13.sp, lineHeight = 20.sp)

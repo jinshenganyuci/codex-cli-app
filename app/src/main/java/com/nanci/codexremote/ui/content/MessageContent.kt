@@ -23,6 +23,8 @@ import com.nanci.codexremote.core.UserInputs
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import com.nanci.codexremote.ui.theme.NativeTheme
+import com.nanci.codexremote.ui.theme.NativeTypography
 
 /** Presents the flat app-server ThreadItem without discarding unfamiliar fields. */
 @Composable
@@ -36,6 +38,7 @@ fun MessageContent(
     imageLoader: ImageLoader? = null,
     onOpenImage: (ImageSource) -> Unit = {},
     onCopyImage: ((ImageSource) -> Unit)? = null,
+    imageBaseDirectory: String? = null,
 ) {
     val type = item.messageString("type")
     Column(modifier.fillMaxWidth()) {
@@ -44,34 +47,40 @@ fun MessageContent(
             "agentMessage" -> {
                 val text = item.messageString("text")
                 if (text.isNotBlank()) {
-                    MarkdownContent(text, onOpenLink = onOpenLink)
+                    MarkdownContent(text, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                        imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity())
                     IconButton(onClick = { onCopy(text) }, modifier = Modifier.padding(top = 10.dp).size(36.dp)) {
                         ContentIcon("copy", Modifier.size(21.dp), ContentInk)
                     }
                 }
             }
-            "plan" -> PlanPreview(item.messageString("text"), onOpen = onPlanOpen, onCopy = onCopy, onDownload = onDownload)
+            "plan" -> PlanPreview(item.messageString("text"), onOpen = onPlanOpen, onCopy = onCopy, onDownload = onDownload,
+                onOpenLink=onOpenLink,imageLoader=imageLoader,onOpenImage=onOpenImage,
+                imageBaseDirectory=imageBaseDirectory,imageKey=item.messageIdentity())
             "commandExecution" -> CommandItem(item, onCopy)
             "fileChange" -> FileChanges(item, onCopy)
             "reasoning" -> {
                 val text = item.optJSONArray("summary").messageStrings().joinToString("\n\n")
                     .ifBlank { item.optJSONArray("content").messageStrings().joinToString("\n\n") }
                 if (text.isNotBlank()) ExpandableItem("思考", item.messageString("status")) {
-                    MarkdownContent(text, onOpenLink = onOpenLink)
+                    MarkdownContent(text, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                        imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity())
                 }
             }
-            "mcpToolCall", "dynamicToolCall" -> ToolItem(item,onCopy,onOpenLink,imageLoader,onOpenImage)
+            "mcpToolCall", "dynamicToolCall" -> ToolItem(item,onCopy,onOpenLink,imageLoader,onOpenImage,imageBaseDirectory)
             "functionCallOutput" -> ExpandableItem(item.messageString("name").ifBlank { "工具结果" }) {
                 OutputContent(item.opt("output").messageValue(), onCopy)
             }
             "collabAgentToolCall" -> ExpandableItem("子任务 · ${item.messageString("tool")}", item.messageString("status")) {
-                item.messageString("prompt").takeIf { it.isNotBlank() }?.let { MarkdownContent(it, onOpenLink = onOpenLink) }
+                item.messageString("prompt").takeIf { it.isNotBlank() }?.let { MarkdownContent(it, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                        imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity()) }
                 val agents = item.optJSONObject("agentsStates")
                 agents?.keys()?.asSequence()?.toList()?.forEach { id ->
                     val agent = agents.optJSONObject(id)
                     Text(id.take(24), color = ContentMuted, fontSize = 12.sp)
                     Text(agent?.messageString("status").orEmpty(), color = ContentInk, fontSize = 14.sp)
-                    agent?.messageString("message")?.takeIf { it.isNotBlank() }?.let { MarkdownContent(it, onOpenLink = onOpenLink) }
+                    agent?.messageString("message")?.takeIf { it.isNotBlank() }?.let { MarkdownContent(it, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                        imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity()) }
                 }
             }
             "webSearch" -> ExpandableItem("搜索网页", item.messageString("status")) {
@@ -83,7 +92,8 @@ fun MessageContent(
             "imageGeneration" -> GeneratedImageContent(item,imageLoader,onOpenImage,onCopyImage)
             "enteredReviewMode", "exitedReviewMode" -> {
                 Text(if (type == "enteredReviewMode") "开始审查" else "审查完成", color = ContentMuted, fontSize = 12.sp)
-                item.messageString("review").takeIf { it.isNotBlank() }?.let { MarkdownContent(it, onOpenLink = onOpenLink) }
+                item.messageString("review").takeIf { it.isNotBlank() }?.let { MarkdownContent(it, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                        imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity()) }
             }
             "contextCompaction" -> Text("已整理聊天上下文", color = ContentMuted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
             "sleep" -> ExpandableItem("等待", item.messageString("status")) { OutputContent(item.messageValue(), onCopy) }
@@ -231,22 +241,22 @@ private fun FileChanges(item: JSONObject, onCopy: (String) -> Unit) {
             val change = changes?.optJSONObject(index) ?: return@forEach
             val path = change.messageString("path")
             val diff = change.messageString("diff")
-            val lines = remember(diff) { diff.lines() }
-            val added = lines.count { it.startsWith('+') && !it.startsWith("+++") }
-            val removed = lines.count { it.startsWith('-') && !it.startsWith("---") }
+            val parsed = remember(path, diff) { parseChangedFilePatch(path, diff) }
             var opened by remember(path) { mutableStateOf(true) }
-            Column(Modifier.fillMaxWidth().background(Color(0xFFF9F9F9), RoundedCornerShape(10.dp))) {
+            Column(Modifier.fillMaxWidth().background(ContentField, RoundedCornerShape(10.dp))) {
                 Row(Modifier.fillMaxWidth().clickable { opened = !opened }.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ContentIcon("chevron", Modifier.size(14.dp).rotate(if (opened) 90f else 0f))
                     Text(path.substringAfterLast('/'), color = ContentInk, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("+$added", color = Color(0xFF00A240), fontSize = 12.sp)
-                    Text("−$removed", color = Color(0xFFE02E2A), fontSize = 12.sp)
+                    if (parsed.countsKnown) {
+                        Text("+${parsed.additions}", color = NativeTheme.colors.success, fontSize = 12.sp)
+                        Text("−${parsed.deletions}", color = NativeTheme.colors.danger, fontSize = 12.sp)
+                    }
                     IconButton(onClick = { onCopy(diff) }, modifier = Modifier.size(26.dp)) { ContentIcon("copy", Modifier.size(14.dp)) }
                 }
                 if (opened) {
                     val target = change.optJSONObject("kind")?.messageString("move_path").orEmpty()
                     if (target.isNotBlank()) Text("$path → $target", fontSize = 12.sp, color = ContentMuted, modifier = Modifier.padding(10.dp))
-                    DiffContent(diff)
+                    DiffContent(parsed)
                 }
             }
         }
@@ -254,30 +264,16 @@ private fun FileChanges(item: JSONObject, onCopy: (String) -> Unit) {
 }
 
 @Composable
-private fun DiffContent(diff: String) {
-    val lines = remember(diff) { diff.lines() }
-    var showAll by remember(diff.length / 200) { mutableStateOf(false) }
+private fun DiffContent(file: ChangedFile) {
+    val lines = file.rows
+    var showAll by remember(file.patch) { mutableStateOf(false) }
     var wrap by remember { mutableStateOf(true) }
     Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.End) {
         TextButton(onClick = { wrap = !wrap }) { Text(if (wrap) "关闭换行" else "自动换行", color = ContentMuted, fontSize = 12.sp) }
     }
     SelectionContainer {
-        Column(if (wrap) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-            (if (showAll) lines else lines.take(200)).forEach { line ->
-                val foreground = when {
-                    line.startsWith('+') && !line.startsWith("+++") -> Color(0xFF00682A)
-                    line.startsWith('-') && !line.startsWith("---") -> Color(0xFFAC2020)
-                    line.startsWith("@@") -> Color(0xFF53739C)
-                    else -> ContentInk
-                }
-                val background = when {
-                    line.startsWith('+') && !line.startsWith("+++") -> Color(0xFFEAF8EE)
-                    line.startsWith('-') && !line.startsWith("---") -> Color(0xFFFFEDED)
-                    else -> Color.Transparent
-                }
-                Text(line.ifEmpty { " " }, fontFamily = FontFamily.Monospace, color = foreground, fontSize = 12.sp, lineHeight = 18.sp,
-                    modifier = Modifier.fillMaxWidth().background(background).padding(horizontal = 10.dp), softWrap = wrap)
-            }
+        Column(Modifier.fillMaxWidth()) {
+            (if (showAll) lines else lines.take(200)).forEach { line -> DiffLineRow(line, wrap) }
         }
     }
     if (!showAll && lines.size > 200) TextButton(onClick = { showAll = true }) { Text("显示全部 ${lines.size} 行", color = ContentMuted) }
@@ -286,7 +282,7 @@ private fun DiffContent(diff: String) {
 
 @Composable
 private fun ToolItem(item: JSONObject,onCopy: (String) -> Unit,onOpenLink: (String) -> Unit,
-    imageLoader: ImageLoader?,onOpenImage: (ImageSource) -> Unit) {
+    imageLoader: ImageLoader?,onOpenImage: (ImageSource) -> Unit,imageBaseDirectory: String?) {
     val tool = listOf(item.messageString("server"), item.messageString("tool")).filter { it.isNotBlank() }.joinToString(" · ")
     ExpandableItem(tool.ifBlank { "工具调用" }, item.messageString("status")) {
         if (item.has("arguments") && !item.isNull("arguments")) { Text("参数", color = ContentMuted, fontSize = 12.sp); OutputContent(item.opt("arguments").messageValue(), onCopy) }
@@ -295,7 +291,8 @@ private fun ToolItem(item: JSONObject,onCopy: (String) -> Unit,onOpenLink: (Stri
         if (contents != null) (0 until contents.length()).forEach { index ->
             val content = contents.optJSONObject(index) ?: return@forEach
             when (content.messageString("type")) {
-                "text", "inputText" -> MarkdownContent(content.messageString("text"), onOpenLink = onOpenLink)
+                "text", "inputText" -> MarkdownContent(content.messageString("text"), onOpenLink = onOpenLink, imageLoader = imageLoader,
+                    onOpenImage = onOpenImage, imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity()+":tool:$index")
                 "image", "inputImage" -> {
                     val data = content.messageString("data")
                     val source=if(data.isNotEmpty()) data else content.messageString("url")
@@ -306,7 +303,7 @@ private fun ToolItem(item: JSONObject,onCopy: (String) -> Unit,onOpenLink: (Stri
                 else -> OutputContent(content.messageValue(), onCopy)
             }
         } else if (result != null) OutputContent(result.messageValue(), onCopy)
-        if (item.has("error") && !item.isNull("error")) Text(item.opt("error").messageValue(), color = Color(0xFFB42318), fontSize = 13.sp)
+        if (item.has("error") && !item.isNull("error")) Text(item.opt("error").messageValue(), color = NativeTheme.colors.danger, fontSize = 13.sp)
     }
 }
 
@@ -316,9 +313,10 @@ private fun ExpandableItem(title: String, status: String = "", content: @Composa
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (status == "inProgress" || status == "running") CircularProgressIndicator(Modifier.size(14.dp), color = ContentMuted, strokeWidth = 1.5.dp)
-            else ContentIcon(if (status == "failed" || status == "declined") "close" else "check", Modifier.size(14.dp), if (status == "failed") Color(0xFFB42318) else ContentMuted)
-            Text(title, color = ContentMuted, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (status in setOf("inProgress","in_progress","running")) CircularProgressIndicator(Modifier.size(16.dp), color = ContentMuted, strokeWidth = 1.5.dp)
+            else ContentIcon(when(status) {"failed","declined"->"close";"completed","success","succeeded"->"check";else->"pending"},
+                Modifier.size(16.dp),if(status=="failed") NativeTheme.colors.danger else ContentMuted)
+            Text(title, color = ContentMuted, style=NativeTypography.body14, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
             ContentIcon("chevron", Modifier.size(16.dp).rotate(if (expanded) 90f else 0f))
         }
         if (expanded) Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)

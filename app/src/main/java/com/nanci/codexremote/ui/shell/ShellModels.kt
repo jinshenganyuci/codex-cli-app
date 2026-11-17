@@ -125,6 +125,20 @@ data class ComposerState(
     val editorEnabled: Boolean = enabled && !submitting,
 )
 
+internal enum class ComposerPrimaryAction { Submitting, Send, Stop, Idle }
+
+/** An attachment-only draft can steer a running turn just like a text draft. */
+internal fun composerPrimaryAction(state: ComposerState): ComposerPrimaryAction = when {
+    state.submitting -> ComposerPrimaryAction.Submitting
+    state.text.isNotBlank() || state.attachments.isNotEmpty() -> ComposerPrimaryAction.Send
+    state.running -> ComposerPrimaryAction.Stop
+    else -> ComposerPrimaryAction.Idle
+}
+
+internal fun composerCanSend(state: ComposerState): Boolean = state.enabled && !state.submitting &&
+    state.attachments.all { !it.loading && it.error == null } &&
+    (state.text.isNotBlank() || state.attachments.isNotEmpty())
+
 data class ComposerActions(
     val onTextChange: (String) -> Unit = {},
     val onSend: () -> Unit = {},

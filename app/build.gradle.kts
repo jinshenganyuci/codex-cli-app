@@ -62,8 +62,8 @@ android {
         applicationId = "com.nanci.codexremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.2.10"
+        versionCode = 18
+        versionName = "0.2.15"
         val publicRelease = providers.environmentVariable("CODEX_MOBILE_PUBLIC_RELEASE").orNull == "1"
         buildConfigField("boolean", "PUBLIC_RELEASE", publicRelease.toString())
         resValue("string", "public_update_channel", if (publicRelease) "github" else "ssh")
@@ -127,4 +127,5 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("com.github.mwiede:jsch:0.2.25")
+    implementation("com.caverock:androidsvg-aar:1.4")
 }

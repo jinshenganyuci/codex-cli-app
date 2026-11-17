@@ -22,9 +22,18 @@ import zipfile
 from pathlib import Path
 
 PACKAGE = 'com.nanci.codexremote'
-TOOLS = Path('/srv/buildlab/cache/android-sdk/build-tools/35.0.0')
 APK_LIMIT = 100 * 1024 * 1024
 MANIFEST_LIMIT = 64 * 1024
+
+
+def android_tool(name: str) -> str:
+    configured = os.environ.get('CODEX_ANDROID_BUILD_TOOLS')
+    if configured:
+        return str(Path(configured) / name)
+    sdk = os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
+    if sdk:
+        return str(Path(sdk) / 'build-tools' / '35.0.0' / name)
+    return name  # Resolve from PATH, or supply an explicit CLI option.
 
 # This is a fixed program; the release metadata is sent as JSON on stdin and the
 # payload follows as raw bytes.  No private key or model credential is sent.
@@ -221,10 +230,10 @@ def main() -> int:
     ap.add_argument('--apk', required=True, type=Path)
     ap.add_argument('--baseline-apk', required=True, type=Path, help='prior verified release APK')
     ap.add_argument('--known-hosts', required=True, type=Path, help='trusted SSH host keys')
-    ap.add_argument('--target', default='codex@192.168.7.137')
+    ap.add_argument('--target', required=True, help='SSH destination user@host; no server is built in')
     ap.add_argument('--note', action='append', default=[], help='release note; can be repeated')
-    ap.add_argument('--aapt', default=str(TOOLS / 'aapt'))
-    ap.add_argument('--apksigner', default=str(TOOLS / 'apksigner'))
+    ap.add_argument('--aapt', default=android_tool('aapt'))
+    ap.add_argument('--apksigner', default=android_tool('apksigner'))
     args = ap.parse_args()
     if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*@[A-Za-z0-9][A-Za-z0-9.-]*', args.target):
         raise ValueError('invalid SSH target')

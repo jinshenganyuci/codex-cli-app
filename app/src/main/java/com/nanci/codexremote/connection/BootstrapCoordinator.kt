@@ -47,9 +47,11 @@ class BootstrapCoordinator(
         val token = synchronized(gate) { ++generation }
         io.execute {
             try {
-                if (!current(token) || !store.canBootstrap()) { post(token) { state = BootstrapUiState() }; return@execute }
+                if (!current(token)) return@execute
                 val spec = readSpec() ?: run { post(token) { state = BootstrapUiState() }; return@execute }
                 spec.use {
+                    val allowed = synchronized(gate) { current(token) && store.prepareBootstrap(spec.inviteId) }
+                    if (!allowed) { post(token) { state = BootstrapUiState() }; return@execute }
                     post(token) { state = BootstrapUiState(BootstrapPhase.Preparing) }
                     val pending = store.loadPendingBootstrap(spec.inviteId) ?: BootstrapKeys.generate().use { secret ->
                         synchronized(gate) {

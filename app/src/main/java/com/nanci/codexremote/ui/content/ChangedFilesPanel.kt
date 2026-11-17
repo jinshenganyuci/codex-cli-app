@@ -17,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
@@ -27,26 +26,29 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nanci.codexremote.ui.theme.NativeTheme
+import com.nanci.codexremote.ui.theme.NativeTypography
+import com.nanci.codexremote.ui.theme.nativeShadow
 
-private val AddedInk = Color(0xFF00A240)
-private val RemovedInk = Color(0xFFE02E2A)
-private val DiffBorder = Color(0xFFEDEDED)
+private val AddedInk: Color @Composable get() = NativeTheme.colors.success
+private val RemovedInk: Color @Composable get() = NativeTheme.colors.danger
+private val DiffBorder: Color @Composable get() = NativeTheme.colors.border
 
 /** Native APK FloatingDiffBadge defaults: 34dp minimum, 320dp maximum, 16dp inset/gap. */
 @Composable
 fun ChangedFilesChip(summary: ChangedFilesSummary, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.widthIn(max = 320.dp).heightIn(min = 34.dp)
-            .shadow(20.dp, CircleShape, ambientColor = Color.Black.copy(alpha = .05f), spotColor = Color.Black.copy(alpha = .05f))
+            .nativeShadow(CircleShape,20.dp,Color.Black.copy(alpha=.05f))
             .clickable(onClick = onClick),
-        shape = CircleShape, color = Color.White, border = BorderStroke(.5.dp, DiffBorder),
+        shape = CircleShape, color = NativeTheme.colors.surface, border = BorderStroke(.5.dp, DiffBorder),
     ) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text(summary.title, Modifier.weight(1f, fill = false), color = ContentMuted, fontSize = 14.sp,
-                lineHeight = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            summary.additions?.let { Text("+$it", color = AddedInk, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium) }
-            summary.deletions?.let { Text("-$it", color = RemovedInk, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium) }
+            Text(summary.title, Modifier.weight(1f, fill = false), color = ContentMuted, style=NativeTypography.body14Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            summary.additions?.let { Text("+$it", color = AddedInk, style=NativeTypography.body14Medium) }
+            summary.deletions?.let { Text("-$it", color = RemovedInk, style=NativeTypography.body14Medium) }
         }
     }
 }
@@ -55,6 +57,7 @@ fun ChangedFilesChip(summary: ChangedFilesSummary, onClick: () -> Unit, modifier
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChangedFilesSheet(summary: ChangedFilesSummary, onDismiss: () -> Unit, onCopy: (String) -> Unit) {
+    val colors = NativeTheme.colors
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     var menu by remember { mutableStateOf(false) }
     var wrap by remember { mutableStateOf(true) }
@@ -63,7 +66,7 @@ fun ChangedFilesSheet(summary: ChangedFilesSummary, onDismiss: () -> Unit, onCop
     // File identifiers include path and ordinal so snapshots with stable order retain their folds.
     LaunchedEffect(summary.files.map { it.id }) { collapsed = collapsed.intersect(summary.files.map { it.id }.toSet()) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState,
-        containerColor = Color.White, contentColor = ContentInk, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+        containerColor = colors.surface, contentColor = ContentInk, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(.88f)) {
             Box(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 12.dp)) {
                 Text(summary.title, Modifier.align(Alignment.Center).padding(horizontal = 40.dp),
@@ -73,10 +76,10 @@ fun ChangedFilesSheet(summary: ChangedFilesSummary, onDismiss: () -> Unit, onCop
                     IconButton(onClick = { menu = true }, modifier = Modifier.semantics { contentDescription = "差异选项" }) {
                         Canvas(Modifier.size(24.dp)) {
                             val unit = size.width / 24f
-                            listOf(6f, 12f, 18f).forEach { y -> drawCircle(ContentInk, 1.7f * unit, Offset(12f * unit, y * unit)) }
+                            listOf(6f, 12f, 18f).forEach { y -> drawCircle(colors.ink, 1.7f * unit, Offset(12f * unit, y * unit)) }
                         }
                     }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Color.White) {
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = colors.surface) {
                         DropdownMenuItem(text = { Text("复制全部差异") }, onClick = { menu = false; onCopy(summary.patch) })
                         DropdownMenuItem(text = { Text(if (wrap) "关闭自动换行" else "自动换行") }, onClick = { wrap = !wrap; menu = false })
                         if (summary.files.isNotEmpty()) DropdownMenuItem(text = { Text(if (collapsed.size == summary.files.size) "展开所有文件" else "折叠所有文件") },
@@ -120,7 +123,7 @@ fun ChangedFilesSheet(summary: ChangedFilesSummary, onDismiss: () -> Unit, onCop
 
 @Composable
 private fun FileDiffHeader(file: ChangedFile, expanded: Boolean, onToggle: () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(Color(0xFFF9F9F9))) {
+    Column(Modifier.fillMaxWidth().background(ContentField)) {
         HorizontalDivider(color = DiffBorder)
         Row(Modifier.fillMaxWidth().heightIn(min = 36.dp).clickable(onClick = onToggle)
             .semantics { contentDescription = "${if (expanded) "折叠" else "展开"} ${file.title}" }
@@ -139,10 +142,10 @@ private fun FileDiffHeader(file: ChangedFile, expanded: Boolean, onToggle: () ->
 }
 
 @Composable
-private fun DiffLineRow(row: ChangedLine, wrap: Boolean) {
+internal fun DiffLineRow(row: ChangedLine, wrap: Boolean) {
     if (row.kind == ChangedLineKind.Separator) {
         Text(row.text, Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)
-            .background(Color(0xFFF3F3F3), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 6.dp),
+            .background(ContentField, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 6.dp),
             color = ContentMuted, fontSize = 12.sp, lineHeight = 18.sp)
         return
     }
@@ -151,9 +154,18 @@ private fun DiffLineRow(row: ChangedLine, wrap: Boolean) {
             color = ContentMuted, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
         return
     }
-    val background = when (row.kind) { ChangedLineKind.Addition -> Color(0xFFEAF8EE); ChangedLineKind.Deletion -> Color(0xFFFFEDED); else -> Color.White }
+    val colors = NativeTheme.colors
+    val background = when (row.kind) {
+        ChangedLineKind.Addition -> if(colors.isDark) colors.success.copy(alpha=.16f) else Color(0xFFEAF8EE)
+        ChangedLineKind.Deletion -> if(colors.isDark) colors.danger.copy(alpha=.16f) else Color(0xFFFFEDED)
+        else -> colors.surface
+    }
     val marker = when (row.kind) { ChangedLineKind.Addition -> "+"; ChangedLineKind.Deletion -> "−"; else -> " " }
-    val ink = when (row.kind) { ChangedLineKind.Addition -> Color(0xFF00682A); ChangedLineKind.Deletion -> Color(0xFFAC2020); else -> ContentInk }
+    val ink = when (row.kind) {
+        ChangedLineKind.Addition -> if(colors.isDark || colors.highContrast) colors.success else Color(0xFF00682A)
+        ChangedLineKind.Deletion -> if(colors.isDark || colors.highContrast) colors.danger else Color(0xFFAC2020)
+        else -> ContentInk
+    }
     val number = if (row.kind == ChangedLineKind.Deletion) row.oldNumber else row.newNumber
     Row(Modifier.fillMaxWidth().background(background), verticalAlignment = Alignment.Top) {
         Text(number?.toString().orEmpty(), Modifier.widthIn(min = 30.dp).padding(start = 4.dp, end = 6.dp),

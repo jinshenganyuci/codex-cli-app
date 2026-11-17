@@ -1,0 +1,12 @@
+Codex 0.2.12 / versionCode 15 — 2026-11-17 (Asia/Shanghai)
+
+Fix: discover archived fork dependencies before permanent deletion, show every additional chat in the confirmation, re-read the scope on confirmation and delete dependency leaves before parents using native thread/delete only.
+Cause: two archived forks reference the reported thread. Archiving does not remove that history dependency. The previous client exposed the server refusal without an actionable dependency flow; thread/list also omits forkedFromId, so metadata-only thread/read is required.
+
+Build: Debian release-01 succeeded, 74.987 seconds.
+APK SHA-256: d1c1084f833c4e0f428cbae9c7287f832b54ac74952c91842d3a4bc0f04ae545
+APK size: 7338387 bytes.
+Publication: private update channel, original signing certificate, normal APK without an activation invitation.
+Validation: compilation, publisher package/signature/version checks, transfer SHA-256 and published-index consistency only.
+Tests: not run, explicitly requested by user. No Android installation, destructive RPC, or deletion smoke test was performed. Existing screenshot chat and its forks were left intact.
+Limit: public lineage metadata cannot expose every normalized history_base edge; any remaining backend reference guard stays enforced and is reported in Chinese.

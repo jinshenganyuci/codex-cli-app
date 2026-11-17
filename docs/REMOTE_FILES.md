@@ -20,4 +20,4 @@
 
 图片继续使用既有图片查看器；可识别的代码/纯文本保留有限长度预览。PDF、Word 等二进制文件提供下载和系统打开。本次没有增加 HTML 执行或视频播放器。Android 10+ 使用 Downloads；Android 8/9 使用系统文件选择器兼容保存，这属于本项目兼容逻辑，原包仅支持 Android 10+ 的远程文件下载。
 
-本次证据入口：Debian `/srv/buildlab/artifacts/codex-mobile/20261116-file-download/`。构建、目标机验证和未覆盖项见对应版本验证记录。
+本次证据入口：Debian 受控产物区内的相对归档标识 `codex-mobile/20261116-file-download/`，实际根目录见本机私有 `work/local-environment.md`。构建、目标机验证和未覆盖项见对应版本验证记录。

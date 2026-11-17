@@ -32,8 +32,8 @@ interface CoreContract : AutoCloseable {
     /** Async questions use turn/steer, not item/tool/requestUserInput responses. */
     fun replyAsync(answers: Map<String, String>): CompletableFuture<JSONObject>
     fun dismissAsync(questionKey: String)
-    fun implementPlan(planItemId: String): CompletableFuture<JSONObject>
-    fun revisePlan(planItemId: String, feedback: String): CompletableFuture<JSONObject>
+    fun implementPlan(planItemId: String, options: TurnOptions = TurnOptions()): CompletableFuture<JSONObject>
+    fun revisePlan(planItemId: String, feedback: String, options: TurnOptions = TurnOptions()): CompletableFuture<JSONObject>
     fun uploadAttachment(name: String, input: InputStream, size: Long): CompletableFuture<String>
     fun listDirectory(absolutePath: String): CompletableFuture<List<RemoteEntry>>
     fun readFile(absolutePath: String, maxBytes: Int = 1024 * 1024): CompletableFuture<ByteArray>

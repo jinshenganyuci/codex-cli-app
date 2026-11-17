@@ -1,0 +1,29 @@
+Codex 0.2.14 / versionCode 17 — 2026-11-17 (Asia/Shanghai)
+
+Fix: Markdown image syntax now renders through the existing native MessageImage and full-screen viewer. SVG has a bounded AndroidSVG decoder; PNG continues through the raster path. Relative image paths resolve against the chat working directory; plain file links retain download/open behavior and code examples remain inert.
+Cause: the previous Markdown renderer treated image syntax as text/link content, so PNG references never reached the image component. SVG additionally failed BitmapFactory-only format validation.
+Native evidence: ChatGPT Android 1.2026.307 MessageMarkdownImage/AsyncInlineImage and com.caverock.androidsvg chains; see docs/INLINE_IMAGES.md. No HTML/WebView execution was added.
+
+APK: Codex-0.2.14.apk
+Package: com.nanci.codexremote
+SHA-256: 2e99df34dab1a8298f34db515189bea524f1e468c2cfc1d6e23304b3ea78443f
+Size: 7436787 bytes
+Signing certificate: original release certificate, unchanged.
+Publication: private SSH/SFTP update channel; ordinary APK without any activation invitation. GitHub source was not pushed in this task.
+
+Build: Debian release-02 succeeded in 33.528 seconds, production assembleRelease including lintVital and assembleReleaseAndroidTest. The first attempt spent 106.872 seconds and stopped on an instrumentation import error; correcting androidx.activity.compose.setContent resolved it. This was a test-tool compilation error, not a functional test failure. Both attempts and source inputs are preserved.
+
+Target validation: OnePlus 7 Pro GM1910, ARM64, YAAP / Android 16, USB ADB from Mac.
+- Same signed release APK installed as an upgrade; connection store retained.
+- Instrumentation final status passed, using authenticated SFTP files, the production ImagePipeline and production MessageContent.
+- SVG decoded to 1024x614 and PNG to 800x480; both inline images reached Ready and were visually inspected in the chat UI.
+- Both SVG and PNG opened in the full-screen viewer; a second focused run captured the PNG viewer after the first screenshot missed the test hold.
+- Markdown paths/code guards, both SVG data-URI encodings, owner-scoped cache isolation, original SVG export and PNG clipboard export, and unsafe-SVG rejection passed.
+- No remote chat mutations. The test package, temporary phone XML/cache and remote fixtures were removed; the release app remains installed, other applications were preserved and the phone was left asleep.
+- APK size/hash matched after transfer. Authenticated private update retrieval was verified.
+
+Limits: these results cover the stated phone and test cases, not every device or every SVG feature. SVG scripts, external resource references and unsupported/oversized documents are not rendered. Plain [file](image.png) links are not automatically promoted to images; use Markdown image syntax for inline display.
+
+Private video, phone captures, native decompilation references and fixtures are excluded from the distributable source archive.
+
+Known limitations in 0.2.14 (fixed by 0.2.15): same-path file replacement could remain cached; reference-style Markdown images were not supported.

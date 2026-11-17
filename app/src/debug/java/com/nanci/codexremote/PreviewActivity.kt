@@ -67,7 +67,7 @@ private fun FixtureScreen(scenario: String,onClose: () -> Unit) {
                 when(scenario) {
                     "tool_question" -> ToolUserInputCard(JSONObject(FixtureQuestions),onSubmit={record(it.toString())})
                     "async" -> AsyncQuestionCard(JSONObject().put("question","一加一等于几？"),onClose={dismissed=true;record("关闭")},onSkip={dismissed=true;record("跳过")},onSubmit={record("发送：$it")})
-                    "plan_decision" -> PlanDecisionCard(onImplement={record("执行计划")},onRevise={record("修改：$it")},onSkip={dismissed=true;record("跳过")})
+                    "plan_decision" -> PlanDecisionCard(planId="preview-plan",onImplement={record("执行计划")},onRevise={record("修改：$it")},onSkip={dismissed=true;record("跳过")})
                     "approval" -> ApprovalCard("item/commandExecution/requestApproval",JSONObject(FixtureApproval),onReply={value,feedback ->record(value.toString()+(feedback?.let{" / $it"} ?: ""))})
                     "elicitation" -> ElicitationCard(JSONObject(FixtureForm),onReply={record(it.toString())},onOpenUrl={record("打开：$it")})
                 }
@@ -88,7 +88,7 @@ private val FixtureQuestions="""
 """.trimIndent()
 
 private val FixtureApproval="""
-{"threadId":"preview-thread","turnId":"preview-turn","itemId":"preview-command","command":"npm run build","cwd":"/srv/buildlab/tasks/codex-mobile/preview","reason":"需要运行构建来验证代码。","availableDecisions":["accept","acceptForSession","decline","cancel"]}
+{"threadId":"preview-thread","turnId":"preview-turn","itemId":"preview-command","command":"npm run build","cwd":"/tmp/codex-mobile-preview","reason":"需要运行构建来验证代码。","availableDecisions":["accept","acceptForSession","decline","cancel"]}
 """.trimIndent()
 
 private val FixtureForm="""
