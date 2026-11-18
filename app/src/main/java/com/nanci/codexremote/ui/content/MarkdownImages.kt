@@ -9,6 +9,11 @@ internal fun markdownImageSpans(text: String, references: Map<String, String> = 
     val images = mutableListOf<MarkdownImageSpan>()
     var i = 0
     while (i < text.length) {
+        val math = inlineMathAt(text, i)
+        if (math != null) {
+            i = math.end
+            continue
+        }
         if (text[i] == '\\') { i += 2; continue }
         if (text[i] == '`') {
             val run = text.substring(i).takeWhile { it == '`' }.length
@@ -68,7 +73,9 @@ internal fun markdownReferenceDocument(text: String): MarkdownReferenceDocument 
     val references = linkedMapOf<String, String>()
     var fence: Char? = null
     var fenceLength = 0
+    var mathEnd = 0
     for (index in lines.indices) {
+        if (index < mathEnd) continue
         val line = lines[index]
         val indent = line.takeWhile { it == ' ' }.length
         val trimmed = line.trimStart()
@@ -80,6 +87,11 @@ internal fun markdownReferenceDocument(text: String): MarkdownReferenceDocument 
         if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
             fence = trimmed.first()
             fenceLength = trimmed.takeWhile { it == fence }.length
+            continue
+        }
+        val math = displayMathAt(lines, index)
+        if (math != null) {
+            mathEnd = math.end
             continue
         }
         if (indent > 3 || line.startsWith('\t') || !trimmed.startsWith('[')) continue

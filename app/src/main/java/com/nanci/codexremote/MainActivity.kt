@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Build
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -50,14 +51,22 @@ import java.util.concurrent.CompletableFuture
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState:Bundle?) {
-        super.onCreate(savedInstanceState); enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 29) window.decorView.isForceDarkAllowed = false
+        val appearance = AppearancePreferences(this)
+        applyColorModeToSystemBars(appearance.read())
         setContent {
+            var colorMode by remember { mutableStateOf(appearance.read()) }
+            SideEffect { applyColorModeToSystemBars(colorMode) }
             val vm:RemoteViewModel=viewModel()
             val updates:UpdateCoordinator=viewModel()
             val currentConnection by rememberUpdatedState(vm.activeConnection)
             LaunchedEffect(vm.activeConnection) { updates.onConnectionAvailable(vm.activeConnection) }
-            NativeAppTheme() {
-                RemoteApp(vm)
+            NativeAppTheme(darkTheme = colorMode == AppColorMode.Dark) {
+                RemoteApp(vm, colorMode) { selected ->
+                    appearance.save(selected)
+                    colorMode = selected
+                }
                 UpdateUi(updates)
             }
             DisposableEffect(this,vm,updates) {
@@ -73,13 +82,20 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun applyColorModeToSystemBars(mode: AppColorMode) {
+        val style = SystemBarStyle.auto(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT) {
+            mode == AppColorMode.Dark
+        }
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+    }
 }
 
 private data class ThreadActionTarget(val id:String,val title:String,val owner:String)
 private data class ProjectActionTarget(val path:String,val owner:String)
 
 @Composable
-private fun RemoteApp(vm:RemoteViewModel) {
+private fun RemoteApp(vm:RemoteViewModel, colorMode:AppColorMode, onColorModeChange:(AppColorMode)->Unit) {
     val context=LocalContext.current
     val installedVersion=remember(context) {runCatching {
         context.packageManager.getPackageInfo(context.packageName,0).versionName ?: BuildConfig.VERSION_NAME
@@ -263,7 +279,7 @@ private fun RemoteApp(vm:RemoteViewModel) {
                 onSave={profile,secret->if(vm.saveConnection(profile,secret,editing?.id))route="home"},onCancel={route="settings"},
                 onDelete=editing?.let { saved->{vm.removeConnection(saved.id);route="settings"} })
             route=="settings"->SettingsScreen(connections=vm.connections,activeId=vm.activeConnection?.id,workspace=vm.workspace,
-                version=installedVersion,
+                version=installedVersion,colorMode=colorMode,onColorModeChange=onColorModeChange,
                 onBack={route="home"},onAdd={editing=null;route="connection"},onEdit={editing=it;route="connection"},
                 onSelect={vm.connect(it);route="home"},onWorkspaceChange=vm::updateWorkspace)
             route=="search"->SearchPage(vm,onBack={route="home"},onOpen={id->route="home";vm.openThread(id)})

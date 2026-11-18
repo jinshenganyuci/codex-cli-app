@@ -25,9 +25,9 @@
 
 ## 本项目的正式更新发布
 
-用户要求交付新版安装包时，完成对应验证后，将同一份正式 APK 发布到现有 Codex 虚拟机的更新目录，并核对版本索引与交付文件的版本号、大小和 SHA-256 一致。更新目录为登录用户 home 下 `.local/share/codex-mobile/updates/`，通过既有 SSH/SFTP 认证访问。
+本规则仅适用于此 Codex Android 客户端项目。每次修复或新功能完成并通过相应验证后，将同一份正式 APK 发布到现有私有在线更新通道，无需逐次另行确认。通过现有 SSH/SFTP 入口读回版本索引和 APK，核对版本号、大小和 SHA-256 一致后，才算交付完成。更新目录为 Codex 虚拟机登录用户 home 下的 `.local/share/codex-mobile/updates/`。
 
-发布使用项目 `scripts/publish-release.py`，从 Debian 编译机执行；固定应用包名、沿用已有签名，递增 versionCode，APK 先到位，最后原子更新 `latest.json`。保留旧版用于核对，不把 Debug、升级测试基包、临时签名或未经验证的包发布给用户。仅有代码修改或试验构建不构成发版授权。
+发布使用项目 `scripts/publish-release.py`，从 Debian 编译机执行；固定应用包名、沿用已有签名，递增 versionCode，APK 先到位，最后原子更新 `latest.json`。保留旧版用于核对，不把 Debug、升级测试基包、临时签名或未经验证的包发布给用户。用户明确要求暂缓或跳过发布时按本次要求执行。此规则的发布授权仅覆盖现有私有在线更新通道，GitHub 推送和公开发布仍按当次授权执行。
 
 自动检查与下载不得依赖 App Server 启动成功；不得把 SSH 私钥或模型提供方密钥打包到客户端、源码 ZIP 或更新目录。安装须走 Android 系统确认流程，保持用户已有连接和聊天数据。
 

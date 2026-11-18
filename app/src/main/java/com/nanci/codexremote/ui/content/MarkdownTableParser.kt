@@ -1,6 +1,6 @@
 package com.nanci.codexremote.ui.content
 
-/** Pipes in escaped text or complete backtick spans belong to a cell, not a new column. */
+/** Escaped pipes and pipes in code or formulas belong to the current cell. */
 internal fun splitTableRow(line: String): List<String> {
     val text = line.trim()
     val cells = mutableListOf<String>()
@@ -11,6 +11,12 @@ internal fun splitTableRow(line: String): List<String> {
     var index = 0
     while (index < text.length) {
         val character = text[index]
+        val math = if (codeRun == 0) inlineMathAt(text, index) else null
+        if (math != null) {
+            cell.append(text, index, math.end)
+            index = math.end
+            continue
+        }
         if (character == '\\' && index + 1 < text.length) {
             if (text[index + 1] == '|') cell.append('|')
             else cell.append(text[index]).append(text[index + 1])

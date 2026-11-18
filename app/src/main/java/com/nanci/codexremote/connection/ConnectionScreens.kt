@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -36,6 +37,9 @@ import com.nanci.codexremote.core.ConnectionProfile
 import com.nanci.codexremote.core.SshCredential
 import com.nanci.codexremote.ui.theme.NativeTheme
 import com.nanci.codexremote.ui.theme.NativeTypography
+import com.nanci.codexremote.ui.theme.AppColorMode
+import com.nanci.codexremote.ui.shell.ShellGlyph
+import com.nanci.codexremote.ui.shell.ShellMenu
 
 private val Ink: Color @Composable get() = NativeTheme.colors.ink
 private val Secondary: Color @Composable get() = NativeTheme.colors.muted
@@ -220,12 +224,17 @@ fun SettingsScreen(
     onSelect: (SavedConnection) -> Unit,
     onWorkspaceChange: (String) -> Unit,
     version: String = "0.2.0",
+    colorMode: AppColorMode = AppColorMode.Light,
+    onColorModeChange: (AppColorMode) -> Unit = {},
 ) {
     var directory by remember(workspace) { mutableStateOf(workspace) }
     Column(Modifier.fillMaxSize().background(NativeTheme.colors.surface).statusBarsPadding().imePadding()) {
         PageHeader("设置", onBack)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Spacer(Modifier.height(8.dp))
+            SectionLabel("外观")
+            ColorModeSetting(colorMode, onColorModeChange)
+            Spacer(Modifier.height(6.dp))
             SectionLabel("连接")
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(FieldBackground)) {
                 connections.forEachIndexed { index, connection ->
@@ -262,6 +271,40 @@ fun SettingsScreen(
                 Text(version, color = Secondary, fontSize = 14.sp)
             }
             Spacer(Modifier.navigationBarsPadding().height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun ColorModeSetting(mode: AppColorMode, onChange: (AppColorMode) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(FieldBackground)
+            .semantics { stateDescription = mode.label }
+            .clickable(role = Role.Button, onClickLabel = "选择色彩") { expanded = true }
+            .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("色彩", color = Ink, style = NativeTypography.body16, modifier = Modifier.weight(1f))
+            Text(mode.label, color = Secondary, style = NativeTypography.body14)
+            Spacer(Modifier.width(8.dp))
+            ShellGlyph("right", Modifier.size(24.dp), Secondary)
+        }
+        ShellMenu(expanded, { expanded = false }) {
+            Column(Modifier.selectableGroup()) {
+                AppColorMode.entries.forEach { option ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        .selectable(selected = option == mode, role = Role.RadioButton, onClick = {
+                            expanded = false
+                            onChange(option)
+                        }).padding(start = 24.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text(option.label, color = Ink, style = NativeTypography.menu16, modifier = Modifier.weight(1f))
+                        Spacer(Modifier.width(16.dp))
+                        if (option == mode) ShellGlyph("check", Modifier.size(24.dp), Ink)
+                        else Spacer(Modifier.size(24.dp))
+                    }
+                }
+            }
         }
     }
 }

@@ -116,9 +116,14 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
     private var draftKey = "new"
     private var selectionId:String? = null
-    private var homeDraftTransferOwner:String? = null
+    private class HomeDraftTransfer(val owner: String, val homeKey: String, val keepEditor: Boolean) {
+        var threadKey: String? = null
+    }
+    private var homeDraftTransfer: HomeDraftTransfer? = null
+    private var homeDraftRevision = 0L
+    private var chatCreation = 0L
     val editingHomeDraftWhileCreating: Boolean
-        get() = creating && homeDraftTransferOwner == imageOwner()
+        get() = creating && homeDraftTransfer?.let { it.owner == imageOwner() && it.keepEditor } == true
     val editorDraftReady: Boolean
         get() = ComposerConnectionPolicy.editorReady(draftOwner(), home, creating,
             editingHomeDraftWhileCreating, draftKey, state.selectedThread?.id, selectionId)
@@ -153,10 +158,12 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         replacements.forEach { (old,new) ->
             val oldKey="${draftOwner()}:$old"
             val newKey="${draftOwner()}:$new"
-            val saved=if(draftKey==oldKey)draft else prefs.getString("draft:$oldKey",null)
+            val transfer = boundHomeDraft()?.takeIf { draftKey == oldKey }
+            val saved = if (transfer != null) null else if (draftKey == oldKey) draft else prefs.getString("draft:$oldKey", null)
             prefs.edit().apply { if(saved!=null)putString("draft:$newKey",saved);remove("draft:$oldKey") }.apply()
             if(draftKey==oldKey) {
                 draftKey=newKey
+                transfer?.threadKey = newKey
                 if(selectionId==old)selectionId=new
                 // A reconnect can recreate only a proven unsent draft. Keep the text,
                 // attachments and selected model instead of loading a blank new draft.
@@ -178,6 +185,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             if(deletedSelection && incoming.selectedThread==null) {
                 // Do not persist the deleted draft again when returning to the list.
                 selectionId=null;home=true;creating=false;attachments=emptyList();stagedAsync=emptyMap()
+                homeDraftTransfer = null
                 draftKey="$connectionId:new";draft=prefs.getString("draft:$draftKey","").orEmpty()
                 restoreModelDefaults()
             } else if(draftKey in deletedDraftKeys) {
@@ -189,18 +197,20 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         if(incoming.connected && incoming.lastError!=null && incoming.lastError!=previousError)message=incoming.lastError
         incoming.selectedThread?.takeIf { !home && !incoming.loadingThread }?.let { thread ->
             if (thread.id != selectionId) {
+                val transfer = homeDraftTransfer?.takeIf { creating && it.owner == imageOwner() && it.homeKey == draftKey }
                 persistDraft()
                 selectionId = thread.id
                 draftKey = "${draftOwner()}:${thread.id}"
-                if(creating && homeDraftTransferOwner==imageOwner()) {
-                    // Carry the live draft, not a pre-upload snapshot which could restore
-                    // an obsolete loading attachment after its upload has completed.
-                    persistDraft()
+                if (transfer != null) {
+                    // The unsubmitted thread may not appear in the list. Keep its
+                    // Home draft as the only persistent copy until the first send.
+                    transfer.threadKey = draftKey
                     for(index in waitingAttachments.indices) {
                         val pending=waitingAttachments[index]
                         if(pending.connection==draftOwner())waitingAttachments[index]=pending.copy(thread=thread.id)
                     }
                 } else {
+                    homeDraftTransfer = null
                     draft = prefs.getString("draft:$draftKey", "") ?: ""
                     val retained=waitingAttachments.filter {it.connection==draftOwner() && it.thread==thread.id}.map {it.id}.toSet()
                     attachments=attachments.filter {it.id in retained}
@@ -269,7 +279,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         try {
             persistDraft()
             if(activeConnection?.id==id) { manualDisconnect=true;connectAttempt++;repo.disconnect(clearSession=true);selectionId=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap() }
-            store.remove(id);reloadConnections();home=true;creating=false;homeDraftTransferOwner=null
+            store.remove(id);reloadConnections();home=true;creating=false;homeDraftTransfer=null
             draftKey="${draftOwner()}:new";draft=prefs.getString("draft:$draftKey","").orEmpty();restoreModelDefaults(emptyList())
         }
         catch(e:Exception) { message=e.message ?: "删除连接失败" }
@@ -289,7 +299,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 reconnectTask?.let(main::removeCallbacks);reconnectTask=null;reconnectScheduled=false
                 persistDraft(); store.setActive(saved.id)
                 val switching=!sameRecord || !sameOwner
-                if(switching) { manualDisconnect=true;repo.disconnect();selectionId=null;home=true;creating=false;homeDraftTransferOwner=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap();planMode=false;fast=false;permission=ShellPermission.Custom }
+                if(switching) { manualDisconnect=true;repo.disconnect();selectionId=null;home=true;creating=false;homeDraftTransfer=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap();planMode=false;fast=false;permission=ShellPermission.Custom }
                 else if(force) {manualDisconnect=true;repo.disconnect()}
                 activeConnection=saved;files.onOwnerChanged();manualDisconnect=false;message=null
                 workspace=store.workspaceFor(saved)
@@ -312,30 +322,44 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         else if(state.connected)refreshWorkingDiff()
     }
     fun background() {appVisible=false;reconnectTask?.let(main::removeCallbacks);reconnectTask=null;reconnectScheduled=false}
-    fun newChat(focus:Boolean=false) {
-        if(!state.connected) { message="请先连接服务器"; return }
-        if(creating)return
-        if(!home)restoreModelDefaults()
-        val owner=imageOwner()
-        val keepExistingEditorFocus=focus && home
-        homeDraftTransferOwner=owner.takeIf {keepExistingEditorFocus}
-        if(homeDraftTransferOwner==null) {attachments=emptyList();waitingAttachments.clear()}
-        persistDraft(); home=false; creating=true
-        observe(repo.newThread(workspace.takeIf { it.isNotBlank() },model.takeIf { it.isNotBlank() })) { result ->
-            val id=result.optJSONObject("thread")?.optString("id")
-            if(owner!=imageOwner())return@observe
-            creating=false
-            if(home || state.selectedThread?.id!=id)return@observe
-            // Home already owns a focused editor. A delayed creation response must not
-            // reopen an IME the user dismissed while the request was pending.
-            if(focus && !keepExistingEditorFocus) focusRequest++
-        }.whenComplete { _,e -> if(owner==imageOwner()) {homeDraftTransferOwner=null;if(e!=null)creating=false} }
+    fun newChat(focus: Boolean = false) = createChat(focus, sendDraft = false)
+
+    private fun createChat(focus: Boolean, sendDraft: Boolean) {
+        if (!state.connected) { message = "请先连接服务器"; return }
+        if (creating) return
+        if (!home) restoreModelDefaults()
+        val owner = imageOwner()
+        val generation = state.connection.generation
+        val keepExistingEditorFocus = focus && home
+        persistDraft()
+        val transfer = if (home && (focus || sendDraft)) HomeDraftTransfer(owner, draftKey, keepExistingEditorFocus) else null
+        homeDraftTransfer = transfer
+        if (transfer == null) {
+            attachments = emptyList()
+            waitingAttachments.clear()
+        } else homeDraftRevision++
+        home = false
+        creating = true
+        val request = ++chatCreation
+        repo.newThread(workspace.takeIf { it.isNotBlank() }, model.takeIf { it.isNotBlank() }).whenComplete { result, error ->
+            if (disposed || owner != imageOwner() || request != chatCreation || !creating) return@whenComplete
+            creating = false
+            val id = result?.optJSONObject("thread")?.optString("id")
+            val sameGeneration = generation == state.connection.generation
+            if (error != null || !sameGeneration || id == null || state.selectedThread?.id != id) {
+                if (transfer != null) returnToHome(preserveAttachments = true)
+                if (error != null && sameGeneration) message = safeError(error)
+                return@whenComplete
+            }
+            if (sendDraft) send()
+            // Home's focused editor retains its IME state during creation, including dismissal.
+            else if (focus && !keepExistingEditorFocus) focusRequest++
+        }
     }
     fun openThread(id:String) {
-        homeDraftTransferOwner=null
         val owner=imageOwner()
         val readAtOpen=state.readStates[id]
-        persistDraft();attachments=emptyList();waitingAttachments.clear(); selectionId=null;home=false
+        persistDraft();homeDraftTransfer=null;creating=false;attachments=emptyList();waitingAttachments.clear(); selectionId=null;home=false
         observe(repo.openThread(id)) {
             if (owner==imageOwner() && !home && state.selectedThread?.id==id) {
                 readAtOpen?.takeIf {it.unread && state.readStates[id]==it}?.let { read ->
@@ -346,7 +370,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
-    fun showHome() { homeDraftTransferOwner=null;persistDraft(); home=true; restoreModelDefaults();draftKey="${draftOwner()}:new"; draft=prefs.getString("draft:$draftKey","").orEmpty();attachments=emptyList();waitingAttachments.clear();if(state.connected) observe(repo.refreshThreads()) }
+    fun showHome() = returnToHome(preserveAttachments = false)
+
+    private fun returnToHome(preserveAttachments: Boolean) {
+        persistDraft()
+        homeDraftTransfer = null
+        creating = false
+        home = true
+        restoreModelDefaults()
+        draftKey = "${draftOwner()}:new"
+        draft = prefs.getString("draft:$draftKey", "").orEmpty()
+        if (!preserveAttachments) {
+            attachments = emptyList()
+            waitingAttachments.clear()
+        }
+        if (state.connected) observe(repo.refreshThreads())
+    }
     private fun applyModelSelection(selection:ModelSelection) { model=selection.model;effort=selection.effort }
     private fun restoreModelDefaults(models:List<ModelInfo> = state.models) {
         applyModelSelection(modelPreferences.read(activeConnection).available(models))
@@ -364,8 +403,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         if(state.models.firstOrNull {it.model==model}?.efforts?.contains(value)!=true)return
         rememberModelSelection(ModelSelection(model,value))
     }
-    fun changeDraft(text:String) { draft=text; persistDraft() }
-    private fun persistDraft() { prefs.edit().putString("draft:$draftKey",draft).apply() }
+    private fun boundHomeDraft(): HomeDraftTransfer? =
+        homeDraftTransfer?.takeIf { it.owner == imageOwner() && it.threadKey == draftKey }
+
+    private fun savedDraftKey(): String = boundHomeDraft()?.homeKey ?: draftKey
+
+    fun changeDraft(text: String) {
+        if (draft == text) return
+        draft = text
+        if (savedDraftKey() == "${draftOwner()}:new") homeDraftRevision++
+        persistDraft()
+    }
+
+    private fun persistDraft() {
+        val key = "draft:${savedDraftKey()}"
+        prefs.edit().apply { if (draft.isEmpty()) remove(key) else putString(key, draft) }.apply()
+    }
     fun updateGrouping(value:ThreadGrouping) { grouping=value; prefs.edit().putString("grouping",value.name).apply() }
     private fun projectOwnerPrefix():String = java.security.MessageDigest.getInstance("SHA-256")
         .digest(imageOwner().toByteArray(Charsets.UTF_8)).joinToString("") {"%02x".format(it)}+":"
@@ -473,28 +526,30 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         val ready=if(home)state.connected&&!state.sending else state.canSend
         if(!ready || !editorDraftReady || creating || attachments.any { it.loading || it.error!=null } || (draft.isBlank() && attachments.isEmpty())) return
         if (!composerPermissionsReady()) return
-        if(home || state.selectedThread==null) {
-            val initial=draft; val pending=attachments
-            val connectionOwner=imageOwner()
-            creating=true; home=false
-            observe(repo.newThread(workspace.takeIf { it.isNotBlank() }, model.takeIf { it.isNotBlank() })) { result ->
-                if (imageOwner() != connectionOwner || home || state.selectedThread?.id != result.optJSONObject("thread")?.optString("id")) {
-                    creating=false
-                    return@observe
-                }
-                creating=false; draft=initial; attachments=pending; send()
-            }.whenComplete { _,e -> if(e!=null) creating=false }
+        if (home) {
+            createChat(focus = false, sendDraft = true)
             return
         }
         val sentText=draft; val sentAttachments=attachments
+        val sentDraftKey = draftKey
+        val transfer = boundHomeDraft()
+        val sentHomeRevision = homeDraftRevision
         val id=state.selectedThread?.id
         val connection=activeConnection
         val startsNewTurn=state.activeTurnId==null
         observe(repo.sendMessage(sentText, sentAttachments.mapNotNull { it.input }, options())) {
             // Steering an existing turn cannot change its model; consume only an accepted turn/start.
             if(startsNewTurn)acceptedInitialModelChoice(connection)
-            if(state.selectedThread?.id==id) {
-                if(draft==sentText) changeDraft("")
+            if (transfer != null) {
+                if (homeDraftTransfer === transfer) homeDraftTransfer = null
+                val homePref = "draft:${transfer.homeKey}"
+                if (homeDraftRevision == sentHomeRevision && prefs.getString(homePref, "").orEmpty() == sentText) {
+                    prefs.edit().remove(homePref).apply()
+                    if (home && draftKey == transfer.homeKey) draft = ""
+                }
+            }
+            if(state.selectedThread?.id==id && draftKey == sentDraftKey) {
+                if(draft==sentText) changeDraft("") else if (transfer != null) persistDraft()
                 attachments=attachments.filterNot { a -> sentAttachments.any { it.id==a.id } }
             }
         }
