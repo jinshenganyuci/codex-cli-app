@@ -991,8 +991,9 @@ class CodexRepository : CoreContract {
         private val DELETION_SOURCE_KINDS = listOf("cli", "vscode", "exec", "appServer", "subAgent",
             "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown")
         private val THREAD_METADATA_EVENTS = setOf("thread/name/updated", "thread/section/changed", "thread/readState/changed", "thread/archived", "thread/unarchived", "thread/deleted")
+        private val NATIVE_THREAD_DELETION_VERSIONS = setOf("0.169.0", "0.170.0")
         internal fun supportsNativeThreadDeletion(initialization: JSONObject): Boolean =
-            initialization.optString("userAgent").substringBefore(' ').substringAfterLast('/') == "0.169.0"
+            initialization.optString("userAgent").substringBefore(' ').substringAfterLast('/') in NATIVE_THREAD_DELETION_VERSIONS
         private fun checkedId(id: String) {
             if (id.isBlank() || id.length > 512 || id.any { it.code < 32 || it.code == 127 }) throw CodexException("聊天标识无效")
         }

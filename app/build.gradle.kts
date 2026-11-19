@@ -62,8 +62,8 @@ android {
         applicationId = "com.nanci.codexremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.2.21"
+        versionCode = 25
+        versionName = "0.2.22"
         val publicRelease = providers.environmentVariable("CODEX_MOBILE_PUBLIC_RELEASE").orNull == "1"
         buildConfigField("boolean", "PUBLIC_RELEASE", publicRelease.toString())
         resValue("string", "public_update_channel", if (publicRelease) "github" else "ssh")
