@@ -29,7 +29,7 @@ class CodexRepository : CoreContract {
     private var sectionOrderQuery = 0L
     private var receiptQuery = 0L
     private val receiptQueries = mutableMapOf<String, Long>()
-    private data class UnsubmittedDraft(val started: JSONObject, val generation: Long)
+    private data class UnsubmittedDraft(val started: JSONObject, val generation: Long, val serviceTier: String?)
     private val unsubmittedDrafts = mutableMapOf<String, UnsubmittedDraft>()
     private var disposed = false
     private val hiddenAsync = mutableSetOf<String>()
@@ -239,12 +239,13 @@ class CodexRepository : CoreContract {
             }.whenComplete { _, _ -> if (selectionId == selection) publish(state.copy(loadingThread = false)) }
     }
 
-    override fun newThread(cwd: String?, model: String?): CompletableFuture<JSONObject> = task {
+    override fun newThread(cwd: String?, model: String?, serviceTier: String?): CompletableFuture<JSONObject> = task {
         val selectionId = ++selection
         publish(state.copy(loadingThread = true, selectedThreadReady = false, lastError = null))
-        request("thread/start", JSONObject().putIfNotNull("cwd", cwd?.takeIf { it.isNotBlank() }).putIfNotNull("model", model))
+        request("thread/start", JSONObject().putIfNotNull("cwd", cwd?.takeIf { it.isNotBlank() })
+            .putIfNotNull("model", model).putIfNotNull("serviceTier", serviceTier))
             .thenCompose { result ->
-                rememberUnsubmittedDraft(result)
+                rememberUnsubmittedDraft(result, serviceTier)
                 if (selectionId == selection) {
                     val capability = hydrate(result, loadFallbackHistory = false)
                     refreshThreads()
@@ -253,34 +254,38 @@ class CodexRepository : CoreContract {
             }.whenComplete { _, _ -> if (selectionId == selection) publish(state.copy(loadingThread = false)) }
     }
 
-    private fun rememberUnsubmittedDraft(result: JSONObject) {
+    private fun rememberUnsubmittedDraft(result: JSONObject, serviceTier: String?) {
         val id = result.optJSONObject("thread")?.stringOrNull("id") ?: return
-        unsubmittedDrafts[id] = UnsubmittedDraft(result.copyJson(), transportGeneration())
+        unsubmittedDrafts[id] = UnsubmittedDraft(result.copyJson(), transportGeneration(), serviceTier ?: result.stringOrNull("serviceTier"))
     }
 
     private fun reopenUnsubmittedDraft(threadId: String, draft: UnsubmittedDraft, selectionId: Long): CompletableFuture<JSONObject> {
         if (draft.generation == transportGeneration())
             return hydrate(draft.started, loadFallbackHistory = false).thenApply { draft.started }
-        // Another client may have materialized it while this connection was away. Only the
-        // exact native not-materialized result permits replacing our never-submitted draft.
+        // Another client may have materialized the draft while this connection was away.
+        // Once the daemon unloads an empty draft, the same probe returns "thread not loaded".
         return rpc("thread/turns/list", jsonObject("threadId" to threadId, "limit" to 1,
             "sortDirection" to "desc", "itemsView" to "full"), reportError = false).handle { _, error ->
             if (selectionId != selection || threadId in state.deletedThreadIds)
                 return@handle failed<JSONObject>(CodexException("聊天已变化，请重新操作"))
-            if (error == null) {
+            if (error == null || unsubmittedDrafts[threadId] !== draft) {
                 unsubmittedDrafts.remove(threadId)
                 return@handle openThread(threadId)
             }
             val cause = unwrap(error)
-            val expected = "thread $threadId is not materialized yet; thread/turns/list is unavailable before first user message"
-            if (cause !is CodexException || cause.code != -32600 || cause.safeMessage != expected) {
+            val notMaterialized = "thread $threadId is not materialized yet; thread/turns/list is unavailable before first user message"
+            val notLoaded = "thread not loaded: $threadId"
+            if (cause !is CodexException || cause.code != -32600 ||
+                (cause.safeMessage != notMaterialized && cause.safeMessage != notLoaded)) {
                 publish(state.copy(lastError = safeError(cause)))
                 return@handle failed<JSONObject>(if (cause is Exception) cause else CodexException("无法恢复空聊天"))
             }
             request("thread/start", JSONObject().putIfNotNull("cwd", draft.started.stringOrNull("cwd"))
-                .putIfNotNull("model", draft.started.stringOrNull("model"))).thenCompose { fresh ->
-                rememberUnsubmittedDraft(fresh)
+                .putIfNotNull("model", draft.started.stringOrNull("model")).putIfNotNull("serviceTier", draft.serviceTier))
+                .thenCompose { fresh ->
+                rememberUnsubmittedDraft(fresh, draft.serviceTier)
                 if (selectionId != selection) return@thenCompose CompletableFuture.completedFuture(fresh)
+                if (unsubmittedDrafts[threadId] !== draft) return@thenCompose openThread(threadId)
                 unsubmittedDrafts.remove(threadId)
                 hydrate(fresh, loadFallbackHistory = false, replacedDraftId = threadId).thenApply { fresh }
             }

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -37,6 +38,7 @@ class ImagePipeline(
     private val closed=AtomicBoolean(false)
     private val directory=File(context.cacheDir,"image-content-v2")
     private val exports=File(context.cacheDir,"exports/images-v2")
+    private val resolver=context.applicationContext.contentResolver
     private val reads=ConcurrentHashMap<String,CompletableFuture<ByteArray>>()
     private val pending=ConcurrentHashMap.newKeySet<CompletableFuture<*>>()
     private val revisions=AtomicLong()
@@ -103,6 +105,13 @@ class ImagePipeline(
     }
 
     private fun bytes(owner:String,source:ImageSource,revision:Long=revisions.incrementAndGet()):ByteArray {
+        if (source.kind == ImageSourceKind.LocalUri) {
+            // This kind is created only by the local attachment picker, never by message parsing.
+            val uri = Uri.parse(source.value)
+            require(uri.scheme == "content") { "无法读取此附件" }
+            return resolver.openInputStream(uri)?.use(::readBounded)?.also(::validate)
+                ?: error("无法读取此附件")
+        }
         val key=digest(owner,source)
         if(source.kind==ImageSourceKind.RemotePath || source.kind==ImageSourceKind.HttpUrl) {
             // Only the same loader's concurrent request for the same message can share a fetch.
@@ -132,7 +141,7 @@ class ImagePipeline(
             cached.delete()
         }
         val data=when(source.kind) {
-            ImageSourceKind.RemotePath,ImageSourceKind.HttpUrl -> error("Unexpected mutable image source")
+            ImageSourceKind.RemotePath,ImageSourceKind.HttpUrl,ImageSourceKind.LocalUri -> error("Unexpected mutable image source")
             ImageSourceKind.DataUri -> {
                 val comma=source.value.indexOf(',')
                 require(comma in 1..256) {"图片编码暂不支持"}

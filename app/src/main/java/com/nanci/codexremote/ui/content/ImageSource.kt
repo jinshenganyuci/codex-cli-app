@@ -2,7 +2,7 @@ package com.nanci.codexremote.ui.content
 
 import androidx.compose.ui.graphics.ImageBitmap
 
-enum class ImageSourceKind { DataUri, RemotePath, HttpUrl, GeneratedBase64 }
+enum class ImageSourceKind { DataUri, RemotePath, HttpUrl, GeneratedBase64, LocalUri }
 
 /** Payload is kept by reference; neither equals/hashCode nor toString scan or print image bytes. */
 class ImageSource(
@@ -10,6 +10,7 @@ class ImageSource(
     val value: String,
     val mimeType: String? = null,
     val cacheKey: String,
+    val displayName: String? = null,
 ) {
     override fun toString(): String = "ImageSource(kind=$kind, cacheKey=$cacheKey)"
 }

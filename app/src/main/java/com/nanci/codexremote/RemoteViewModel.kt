@@ -18,6 +18,7 @@ import com.nanci.codexremote.connection.*
 import com.nanci.codexremote.core.*
 import com.nanci.codexremote.ui.shell.*
 import com.nanci.codexremote.ui.content.ImageSource
+import com.nanci.codexremote.ui.content.ImageSourceKind
 import com.nanci.codexremote.ui.content.ChangedFilesSummary
 import com.nanci.codexremote.ui.content.ChangedFilesScope
 import com.nanci.codexremote.ui.content.parseChangedFiles
@@ -27,7 +28,15 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 
-data class DraftAttachment(val id:String, val label:String, val input:JSONObject?=null, val thumbnail:Bitmap?=null, val loading:Boolean=true, val error:String?=null)
+data class DraftAttachment(
+    val id: String,
+    val label: String,
+    val input: JSONObject? = null,
+    val thumbnail: Bitmap? = null,
+    val loading: Boolean = true,
+    val error: String? = null,
+    val imagePreview: ImageSource? = null,
+)
 class SectionMovePendingException(val sectionId:String) : Exception("分区已创建，但移动聊天未完成。请重试移动，或稍后在“移至分区”中选择它。")
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -45,11 +54,15 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf<String?>(null)
     var draft by mutableStateOf(""); private set
     var attachments by mutableStateOf(emptyList<DraftAttachment>()); private set
-    var model by mutableStateOf(ModelSelection().model); private set
-    var effort by mutableStateOf(ModelSelection().effort); private set
+    private var modelSelection by mutableStateOf(ModelSelection())
+    val model get() = modelSelection.model
+    val effort get() = modelSelection.effort
+    val speed get() = modelSelection.speed
+    val speedTiers get() = composerSpeeds(model, state.models)
     var planMode by mutableStateOf(false)
-    var permission by mutableStateOf(ShellPermission.Default)
-    var fast by mutableStateOf(false)
+    private var selectedPermission by mutableStateOf<PermissionPreset?>(null)
+    private val effectivePermission get() = PermissionCapabilities.composerPreset(state, model, selectedPermission)
+    val permission get() = shellPermission(effectivePermission)
     var focusRequest by mutableStateOf(0)
     var imageExport:Pair<String,ImageSource>?=null
     var changedFiles by mutableStateOf<ChangedFilesSummary?>(null); private set
@@ -186,6 +199,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 // Do not persist the deleted draft again when returning to the list.
                 selectionId=null;home=true;creating=false;attachments=emptyList();stagedAsync=emptyMap()
                 homeDraftTransfer = null
+                selectedPermission = null
                 draftKey="$connectionId:new";draft=prefs.getString("draft:$draftKey","").orEmpty()
                 restoreModelDefaults()
             } else if(draftKey in deletedDraftKeys) {
@@ -220,25 +234,27 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 // holds the user's choices. Preserve those choices (including any newer edits).
                 if (!creating) {
                     if(modelPreferences.initialChoicePending(activeConnection)) {
-                        // Opening an old chat during the upgrade must not undo Terra / xhigh.
+                        // Opening an old chat during the upgrade must not undo the forced default.
                         // Keep the marker until a turn is accepted or the user chooses explicitly.
                         restoreModelDefaults(incoming.models)
                     } else {
                         val defaults = modelPreferences.read(activeConnection).available(incoming.models)
-                        model = incoming.threadSettings?.optString("model")?.takeIf { it.isNotBlank() && it!="null" }
+                        val threadModel = incoming.threadSettings?.optString("model")?.takeIf { it.isNotBlank() && it!="null" }
                             ?: thread.model?.takeIf { it.isNotBlank() } ?: defaults.model
-                        effort = incoming.threadSettings?.optString("effort")?.takeIf { it.isNotBlank() && it!="null" }
+                        val threadEffort = incoming.threadSettings?.optString("effort")?.takeIf { it.isNotBlank() && it!="null" }
                             ?: thread.raw.optString("reasoningEffort", "").takeIf { it.isNotBlank() && it!="null" }
-                            ?: ModelSelection(model, defaults.effort).available(incoming.models).effort
+                            ?: ModelSelection(threadModel, defaults.effort).available(incoming.models).effort
+                        val threadSpeed = ComposerSpeed.fromServiceTier(incoming.threadSettings?.stringOrNull("serviceTier"))
+                            ?: defaults.speed.takeIf { threadModel == defaults.model } ?: ComposerSpeed.STANDARD
+                        modelSelection = ModelSelection(threadModel, threadEffort, threadSpeed)
                     }
                     planMode = incoming.threadSettings?.optJSONObject("collaborationMode")?.optString("mode") == "plan"
-                    fast = incoming.threadSettings?.optString("serviceTier")=="priority"
-                    permission = shellPermission(PermissionCapabilities.current(incoming.threadSettings))
                 }
             }
         }
-        if (modelsChanged && home) restoreModelDefaults(incoming.models)
-        else if (modelsChanged && creating) applyModelSelection(ModelSelection(model, effort).available(incoming.models))
+        if (modelsChanged && (home || (!creating && modelPreferences.initialChoicePending(activeConnection)))) {
+            restoreModelDefaults(incoming.models)
+        } else if (modelsChanged && creating) modelSelection = modelSelection.available(incoming.models)
         if (incoming.connected) reconnectCount = 0
         if (wasConnected && !incoming.connected && !manualDisconnect) scheduleReconnect()
         if(incoming.connected && !incoming.loadingThread) {
@@ -280,6 +296,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
             persistDraft()
             if(activeConnection?.id==id) { manualDisconnect=true;connectAttempt++;repo.disconnect(clearSession=true);selectionId=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap() }
             store.remove(id);reloadConnections();home=true;creating=false;homeDraftTransfer=null
+            selectedPermission = null
             draftKey="${draftOwner()}:new";draft=prefs.getString("draft:$draftKey","").orEmpty();restoreModelDefaults(emptyList())
         }
         catch(e:Exception) { message=e.message ?: "删除连接失败" }
@@ -299,7 +316,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 reconnectTask?.let(main::removeCallbacks);reconnectTask=null;reconnectScheduled=false
                 persistDraft(); store.setActive(saved.id)
                 val switching=!sameRecord || !sameOwner
-                if(switching) { manualDisconnect=true;repo.disconnect();selectionId=null;home=true;creating=false;homeDraftTransfer=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap();planMode=false;fast=false;permission=ShellPermission.Custom }
+                if(switching) { manualDisconnect=true;repo.disconnect();selectionId=null;home=true;creating=false;homeDraftTransfer=null;attachments=emptyList();waitingAttachments.clear();stagedAsync=emptyMap();planMode=false;selectedPermission=null }
                 else if(force) {manualDisconnect=true;repo.disconnect()}
                 activeConnection=saved;files.onOwnerChanged();manualDisconnect=false;message=null
                 workspace=store.workspaceFor(saved)
@@ -327,7 +344,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private fun createChat(focus: Boolean, sendDraft: Boolean) {
         if (!state.connected) { message = "请先连接服务器"; return }
         if (creating) return
-        if (!home) restoreModelDefaults()
+        if (!home) {
+            restoreModelDefaults()
+            selectedPermission = null
+        }
         val owner = imageOwner()
         val generation = state.connection.generation
         val keepExistingEditorFocus = focus && home
@@ -341,7 +361,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         home = false
         creating = true
         val request = ++chatCreation
-        repo.newThread(workspace.takeIf { it.isNotBlank() }, model.takeIf { it.isNotBlank() }).whenComplete { result, error ->
+        repo.newThread(workspace.takeIf { it.isNotBlank() }, model.takeIf { it.isNotBlank() }, speed.serviceTier).whenComplete { result, error ->
             if (disposed || owner != imageOwner() || request != chatCreation || !creating) return@whenComplete
             creating = false
             val id = result?.optJSONObject("thread")?.optString("id")
@@ -359,6 +379,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     fun openThread(id:String) {
         val owner=imageOwner()
         val readAtOpen=state.readStates[id]
+        if (home || selectionId != id) selectedPermission = null
         persistDraft();homeDraftTransfer=null;creating=false;attachments=emptyList();waitingAttachments.clear(); selectionId=null;home=false
         observe(repo.openThread(id)) {
             if (owner==imageOwner() && !home && state.selectedThread?.id==id) {
@@ -381,27 +402,31 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         draftKey = "${draftOwner()}:new"
         draft = prefs.getString("draft:$draftKey", "").orEmpty()
         if (!preserveAttachments) {
+            selectedPermission = null
             attachments = emptyList()
             waitingAttachments.clear()
         }
         if (state.connected) observe(repo.refreshThreads())
     }
-    private fun applyModelSelection(selection:ModelSelection) { model=selection.model;effort=selection.effort }
     private fun restoreModelDefaults(models:List<ModelInfo> = state.models) {
-        applyModelSelection(modelPreferences.read(activeConnection).available(models))
+        modelSelection = modelPreferences.read(activeConnection).available(models)
     }
     private fun rememberModelSelection(selection:ModelSelection) {
         val connection=activeConnection ?: return
-        try { modelPreferences.save(connection,selection);applyModelSelection(selection) }
+        try { modelPreferences.save(connection,selection);modelSelection=selection }
         catch(e:Exception) { message=e.message ?: "无法保存默认模型" }
     }
     fun selectModel(value:String) {
         if(state.models.none {it.model==value})return
-        rememberModelSelection(ModelSelection(value,effort).available(state.models))
+        val selection = if (value == model) modelSelection else ModelSelection(value, effort)
+        rememberModelSelection(selection.available(state.models))
     }
     fun selectEffort(value:String) {
         if(state.models.firstOrNull {it.model==model}?.efforts?.contains(value)!=true)return
-        rememberModelSelection(ModelSelection(model,value))
+        rememberModelSelection(modelSelection.copy(effort = value))
+    }
+    fun selectSpeed(value: ComposerSpeed) {
+        if (value in speedTiers) rememberModelSelection(modelSelection.copy(speed = value))
     }
     private fun boundHomeDraft(): HomeDraftTransfer? =
         homeDraftTransfer?.takeIf { it.owner == imageOwner() && it.threadKey == draftKey }
@@ -525,7 +550,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     fun send() {
         val ready=if(home)state.connected&&!state.sending else state.canSend
         if(!ready || !editorDraftReady || creating || attachments.any { it.loading || it.error!=null } || (draft.isBlank() && attachments.isEmpty())) return
-        if (!composerPermissionsReady()) return
+        if ((home || state.activeTurnId == null) && !composerPermissionsReady()) return
         if (home) {
             createChat(focus = false, sendDraft = true)
             return
@@ -557,8 +582,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     fun availablePermissions(): List<ShellPermission> = PermissionCapabilities.available(state, model).map(::shellPermission)
 
     private fun composerPermissionsReady():Boolean {
-        if(permission==ShellPermission.Custom)return true
-        val reason=PermissionCapabilities.disabledReason(state,permissionPreset(permission),model)
+        val preset = effectivePermission
+        if(preset==PermissionPreset.CUSTOM)return true
+        // Older servers may not implement capability discovery. They still validate turn/start.
+        if(selectedPermission==null && state.configRequirements==null)return true
+        val reason=PermissionCapabilities.disabledReason(state,preset,model)
         if(reason!=null) {message=reason;return false}
         return true
     }
@@ -567,8 +595,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectPermission(value: ShellPermission) {
-        PermissionCapabilities.disabledReason(state, permissionPreset(value), model)?.let { message=it; return }
-        permission=value
+        val preset = permissionPreset(value)
+        PermissionCapabilities.disabledReason(state, preset, model)?.let { message=it; return }
+        selectedPermission=preset
     }
 
     private fun permissionPreset(value: ShellPermission): PermissionPreset = when(value) {
@@ -588,15 +617,18 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun options():TurnOptions {
-        return PermissionCapabilities.options(permissionPreset(permission)).copy(
+        return PermissionCapabilities.options(effectivePermission).copy(
             model=model.takeIf { it.isNotBlank() },effort=effort.takeIf { it.isNotBlank() && it!="null" },
             collaborationMode=if(planMode)"plan" else "default",
-            serviceTier=if(fast)"priority" else "default")
+            serviceTier=speed.serviceTier)
     }
     fun answer(p:PendingRequest,result:JSONObject,feedback:String?=null) {
         val thread=p.threadId ?: state.selectedThread?.id
         observe(repo.answer(p.key,result)) {
-            if(!feedback.isNullOrBlank() && state.selectedThread?.id==thread) observe(repo.sendMessage(feedback))
+            if(!feedback.isNullOrBlank() && state.selectedThread?.id==thread &&
+                (state.activeTurnId != null || composerPermissionsReady())) {
+                observe(repo.sendMessage(feedback, options = PermissionCapabilities.options(effectivePermission)))
+            }
         }
     }
     fun implementPlan(id:String) = submitPlan(id,false) { selected -> repo.implementPlan(id,selected) }
@@ -641,21 +673,40 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     val out=java.io.ByteArrayOutputStream(); val buffer=ByteArray(8192); var n:Int
                     while(input.read(buffer).also { n=it }!=-1) { out.write(buffer,0,n); require(out.size()<=20*1024*1024) { "附件超过 20 MB" } }; out.toByteArray()
                 } ?: throw IllegalArgumentException("无法读取附件")
-                val image=resolver.getType(uri)?.startsWith("image/")==true
-                val thumb=if(image)runCatching {ImagePipeline.decode(bytes,320)}.getOrNull() else null
+                val mimeType = resolver.getType(uri)
+                // Some document providers report image files as application/octet-stream.
+                val thumb = runCatching { ImagePipeline.decode(bytes, 320) }.getOrNull()
+                val image = thumb != null || mimeType?.startsWith("image/", ignoreCase = true) == true
+                // Other previewable formats (such as SVG) still go to Codex as files.
+                val modelImage = thumb != null && ImagePipeline.extension(bytes) in setOf("png", "jpg", "gif", "webp")
+                val preview = if (image && uri.scheme == "content") {
+                    ImageSource(ImageSourceKind.LocalUri, uri.toString(), mimeType, "draft:$id", displayName = name)
+                } else null
                 main.post {
                     if(!isCurrent()) return@post
+                    attachments = attachments.map {
+                        if (it.id == id) it.copy(label = name, thumbnail = thumb, imagePreview = preview) else it
+                    }
                     if(!state.connected || state.loadingThread) {
                         if(waitingAttachments.none {it.id==id})waitingAttachments+=PendingAttachment(uri,connection,state.selectedThread?.id,id)
                         attachments=attachments.map {if(it.id==id)it.copy(label="等待连接恢复…") else it}
                         return@post
                     }
-                    attachments=attachments.map { if(it.id==id)it.copy(label=name,thumbnail=thumb) else it }
                     repo.uploadAttachment(name,ByteArrayInputStream(bytes),bytes.size.toLong()).whenComplete { path,error ->
                         if(isCurrent()) {
                             if(image && error==null)images.seedRemote(owner,path,bytes)
-                            attachments=attachments.map { a -> if(a.id!=id)a else if(error!=null)a.copy(loading=false,error=safeError(error)) else
-                                a.copy(loading=false,input=if(image)JSONObject().put("type","localImage").put("path",path) else JSONObject().put("type","mention").put("name",name).put("path",path)) }
+                            attachments = attachments.map { attachment ->
+                                when {
+                                    attachment.id != id -> attachment
+                                    error != null -> attachment.copy(loading = false, error = safeError(error))
+                                    else -> attachment.copy(
+                                        loading = false,
+                                        input = if (modelImage) UserInputs.remoteImage(path) else UserInputs.remoteFile(name, path),
+                                        imagePreview = if (image) ImageSource(ImageSourceKind.RemotePath, path, mimeType,
+                                            "draft:$id:uploaded", displayName = name) else null,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

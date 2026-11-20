@@ -64,7 +64,7 @@ class ComposerChecksActivity : ComponentActivity() {
     private var effort by mutableStateOf("medium")
     private var permission by mutableStateOf(ShellPermission.Default)
     private var plan by mutableStateOf(false)
-    private var fast by mutableStateOf(false)
+    private var speed by mutableStateOf(ComposerSpeed.STANDARD)
     private var attachmentVisible by mutableStateOf(false)
     private val motionThumbnail by lazy {
         Bitmap.createBitmap(88, 126, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.rgb(120, 162, 195)) }
@@ -142,7 +142,7 @@ class ComposerChecksActivity : ComponentActivity() {
         imageMetadata = JSONArray()
         draft = input.getStringExtra("draft") ?: if (scenario == "multiline") multilineDraft() else ""
         attachmentVisible = input.getBooleanExtra("attachment", false)
-        model = models.first().id; effort = "medium"; permission = ShellPermission.Default; plan = false; fast = false
+        model = models.first().id; effort = "medium"; permission = ShellPermission.Default; plan = false; speed = ComposerSpeed.STANDARD
         sendCount = 0; appendCount = 0; pageCount = 0; paging = false; latestRequest = 0; focusRequest = 0
         val count = if (scenario == "history") 26 else 10
         val turns = (1..count).map { n -> makeTurn("history-$n", listOf(
@@ -315,13 +315,13 @@ class ComposerChecksActivity : ComponentActivity() {
                     permission = permission, permissions = listOf(ShellPermission.Default, ShellPermission.AutoReview, ShellPermission.ReadOnly, ShellPermission.FullAccess),
                     models = models, modelId = model, reasoning = effort, focusRequest = focusRequest,
                     attachments = if (attachmentVisible) listOf(ShellAttachment("motion-thumbnail", "motion-check.png", motionThumbnail)) else emptyList(),
-                    allowCamera = false, allowPhotos = false, allowFiles = false, supportsFast = true, fast = fast),
+                    allowCamera = false, allowPhotos = false, allowFiles = false, speedTiers = ComposerSpeed.entries, speed = speed),
                     ComposerActions(onTextChange = { draft = it; record("draft_changed", JSONObject().put("length", it.length).put("lines", it.lines().size)) },
                         onSend = ::send, onStop = ::stopStream, onPlanMode = { plan = it; record("plan_selected", JSONObject().put("enabled", it)) },
                         onPermission = { permission = it; record("permission_selected", JSONObject().put("permission", it.name)) },
                         onModel = { chosen -> model = chosen; effort = models.first { it.id == chosen }.reasoning.let { if ("medium" in it) "medium" else it.firstOrNull().orEmpty() }; record("model_selected", JSONObject().put("model", model).put("effort", effort)) },
                         onReasoning = { effort = it; record("effort_selected", JSONObject().put("effort", it)) },
-                        onFast = { fast = it; record("fast_selected", JSONObject().put("enabled", it)) },
+                        onSpeed = { speed = it; record("speed_selected", JSONObject().put("serviceTier", it.serviceTier)) },
                         onRemoveAttachment = { attachmentVisible = false; record("attachment_removed") },
                         onFocusRequestHandled = { if (focusRequest == it) focusRequest = 0 },
                         onFocus = { record("composer_focused") }),
@@ -370,7 +370,7 @@ class ComposerChecksActivity : ComponentActivity() {
     private fun writeSnapshot() {
         val snapshot = JSONObject().put("runId", runId).put("scenario", scenario).put("device", android.os.Build.MODEL)
             .put("scope", "Debug production Timeline/Composer and real IME; local messages/options only, no server capability validation")
-            .put("current", JSONObject().put("model", model).put("effort", effort).put("permission", permission.name).put("plan", plan).put("fast", fast)
+            .put("current", JSONObject().put("model", model).put("effort", effort).put("permission", permission.name).put("plan", plan).put("serviceTier", speed.serviceTier)
                 .put("draftLength", draft.length).put("draftLines", draft.lines().size).put("imeBottomPx", imeBottomPx)
                 .put("latestRequest", latestRequest).put("sendCount", sendCount).put("appendCount", appendCount).put("pageCount", pageCount)
                 .put("itemCount", chat.items.size).put("firstItemId", chat.items.firstOrNull()?.id).put("lastItemId", chat.items.lastOrNull()?.id)

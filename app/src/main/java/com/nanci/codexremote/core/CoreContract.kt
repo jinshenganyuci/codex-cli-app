@@ -15,7 +15,7 @@ interface CoreContract : AutoCloseable {
     fun request(method: String, params: JSONObject = JSONObject()): CompletableFuture<JSONObject>
     fun refreshThreads(cursor: String? = null, search: String? = null, archived: Boolean = false): CompletableFuture<JSONObject>
     fun openThread(threadId: String): CompletableFuture<JSONObject>
-    fun newThread(cwd: String? = null, model: String? = null): CompletableFuture<JSONObject>
+    fun newThread(cwd: String? = null, model: String? = null, serviceTier: String? = null): CompletableFuture<JSONObject>
     fun loadEarlierTurns(): CompletableFuture<JSONObject>
     fun sendMessage(text: String, inputs: List<JSONObject> = emptyList(), options: TurnOptions = TurnOptions()): CompletableFuture<JSONObject>
     fun steer(text: String): CompletableFuture<JSONObject>

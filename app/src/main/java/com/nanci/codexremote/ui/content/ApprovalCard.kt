@@ -5,107 +5,212 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.nanci.codexremote.core.approvalDecisionsFor
-import org.json.JSONArray
 import com.nanci.codexremote.ui.theme.NativeTypography
-import com.nanci.codexremote.ui.theme.NativeTheme
+import org.json.JSONArray
 import org.json.JSONObject
+
+private data class ApprovalDetails(val title: String, val text: String, val code: Boolean = false)
 
 /** Never infer an approval from the visible label: every row carries its exact wire decision. */
 @Composable
-fun ApprovalCard(method: String, params: JSONObject, enabled: Boolean = true,
-    onReply: (JSONObject, String?) -> Unit, modifier: Modifier = Modifier) {
-    var feedback by remember(method,params.toString()) { mutableStateOf("") }
-    val permissions=method=="item/permissions/requestApproval"
-    val legacy=method=="execCommandApproval" || method=="applyPatchApproval"
-    val fileChange=method.contains("fileChange") || method=="applyPatchApproval"
-    val decisions=remember(method,params.toString()) { approvalDecisionsFor(method,params) }
-    val canDecline=permissions || decisions.any { it=="decline" || it=="denied" || it is JSONObject && it.has("denied") }
-    val canCancel=!permissions && decisions.any { it=="cancel" || it=="abort" }
-    fun respond(value: Any, note: String? = null) { onReply(JSONObject().put("decision",value),note) }
-    fun permissionReply(grant: Boolean,scope: String,note: String? = null) {
-        val result=JSONObject()
-        if(grant) {
-            val requested=params.optJSONObject("permissions") ?: JSONObject()
-            for(key in listOf("network","fileSystem")) {
-                val value=requested.optJSONObject(key)
-                if(value!=null) result.put(key,value)
+fun ApprovalCard(
+    method: String, params: JSONObject, enabled: Boolean = true,
+    onReply: (JSONObject, String?) -> Unit, modifier: Modifier = Modifier,
+) {
+    val request = params.toString()
+    var feedback by remember(method, request) { mutableStateOf("") }
+    var details by remember(method, request) { mutableStateOf<ApprovalDetails?>(null) }
+    val permissions = method == "item/permissions/requestApproval"
+    val legacy = method == "execCommandApproval" || method == "applyPatchApproval"
+    val fileChange = method.contains("fileChange") || method == "applyPatchApproval"
+    val decisions = remember(method, request) { approvalDecisionsFor(method, params) }
+    val accept = decisions.firstOrNull { it == "accept" || it == "approved" }
+    val cancel = decisions.firstOrNull { !permissions && (it == "cancel" || it == "abort") }
+    val deny = decisions.firstOrNull(::isDeclineDecision)
+    fun respond(value: Any, note: String? = null) { onReply(JSONObject().put("decision", value), note) }
+    fun permissionReply(grant: Boolean, scope: String, note: String? = null) {
+        val result = JSONObject()
+        if (grant) {
+            val requested = params.optJSONObject("permissions") ?: JSONObject()
+            for (key in listOf("network", "fileSystem")) {
+                requested.optJSONObject(key)?.let { result.put(key, it) }
             }
         }
-        onReply(JSONObject().put("permissions",result).put("scope",scope),note)
+        onReply(JSONObject().put("permissions", result).put("scope", scope), note)
     }
     fun decline() {
-        val note=feedback.takeIf { it.isNotBlank() }
+        val note = feedback.takeIf { it.isNotBlank() }
         when {
-            permissions -> permissionReply(false,"turn",note)
-            legacy -> respond(JSONObject().put("denied",JSONObject().put("rejection",feedback)),null)
-            else -> respond("decline",note)
+            permissions -> permissionReply(false, "turn", note)
+            legacy && (deny == "denied" || deny is JSONObject) ->
+                respond(JSONObject().put("denied", JSONObject().put("rejection", feedback)))
+            deny != null -> respond(deny, note)
         }
     }
-    ContentCard(modifier) {
-        Column(Modifier.heightIn(max=(LocalConfiguration.current.screenHeightDp*.7f).dp).verticalScroll(rememberScrollState())) {
-            Text(when { permissions -> "Codex 请求额外权限";fileChange -> "批准文件更改？";else -> "批准运行此命令？" },
-                style=NativeTypography.body16,fontWeight=FontWeight.Medium,color=ContentInk)
-            val reason=params.text("reason")
-            if(reason.isNotEmpty()) Text(reason,Modifier.padding(top=8.dp),color=ContentInk,style=NativeTypography.body14)
-            val command=params.opt("command").let { if(it is JSONArray) it.strings().joinToString(" ") else if(it==JSONObject.NULL || it==null) "" else it.toString() }
-            if(command.isNotEmpty()) Text(command,Modifier.padding(top=8.dp).fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                .background(ContentField).padding(12.dp),fontFamily=FontFamily.Monospace,fontSize=12.sp,lineHeight=18.sp,color=ContentInk)
-            if(params.text("cwd").isNotEmpty()) Text(params.text("cwd"),Modifier.padding(top=6.dp),style=NativeTypography.caption12,color=ContentMuted)
-            for(key in listOf("permissions","additionalPermissions","networkApprovalContext","changes","fileChanges")) {
-                val detail=params.opt(key)
-                if(detail!=null && detail!=JSONObject.NULL) {
-                    var expanded by remember(method,params.toString(),key) { mutableStateOf(permissions || fileChange) }
-                    Text(when(key){"changes","fileChanges"->"文件更改";"networkApprovalContext"->"网络访问";else->"请求的权限"} + if(expanded) " ⌄" else " ›",
-                        Modifier.fillMaxWidth().clickable{expanded=!expanded}.padding(top=8.dp,bottom=4.dp),fontSize=12.sp,color=ContentMuted)
-                    if(expanded) Text(approvalRequestDetails(key,detail),
-                        fontSize=12.sp,lineHeight=18.sp,color=ContentMuted)
+    val title = when {
+        permissions -> "Codex 请求额外权限"
+        fileChange -> "批准文件更改？"
+        else -> "批准运行此命令？"
+    }
+    val command = remember(request) {
+        when (val raw = params.opt("command")) {
+            is JSONArray -> raw.strings().joinToString(" ")
+            JSONObject.NULL, null -> ""
+            else -> raw.toString()
+        }
+    }
+    ContentCard(modifier.heightIn(max = (LocalConfiguration.current.screenHeightDp * .7f).dp)) {
+        Text(title, color = ContentInk, style = NativeTypography.body16Medium)
+        // The body can shrink with the window while the title and immediate actions stay visible.
+        key(method, request) {
+            Column(Modifier.weight(1f, fill = false).fillMaxWidth().padding(top = 8.dp).testTag("approval-scroll")
+                .verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val reason = params.text("reason")
+                if (reason.isNotEmpty()) ApprovalPreview(reason, "请求原因", NativeTypography.body14,
+                    reviewLabel = "查看完整原因", onReview = { details = it })
+                if (command.isNotEmpty()) {
+                    ApprovalPreview(command, "完整命令", NativeTypography.code13, maxLines = 4, code = true,
+                        reviewLabel = "查看完整命令", onReview = { details = it })
                 }
-            }
-            if(params.text("grantRoot").isNotBlank()) Text("写入范围：${params.text("grantRoot")}",
-                Modifier.padding(top=8.dp),fontSize=12.sp,lineHeight=18.sp,color=ContentMuted)
-            Spacer(Modifier.height(12.dp))
-            if(permissions) {
-                ApprovalAction("批准","仅本轮对话",enabled) {permissionReply(true,"turn")}
-                HorizontalDivider(color=ContentBorder)
-                ApprovalAction("始终批准","当前会话",enabled) {permissionReply(true,"session")}
-            } else {
-                decisions.filter { it!="decline" && it!="denied" && it!="cancel" && it!="abort" && !(it is JSONObject && it.has("denied")) }.forEachIndexed { index,decision ->
-                    if(index>0) HorizontalDivider(color=ContentBorder)
-                    val label=when(decision) { "accept","approved"->"批准";"acceptForSession","approved_for_session"->"始终批准";else -> when {
-                        decision is JSONObject && (decision.has("acceptWithExecpolicyAmendment") || decision.has("approved_execpolicy_amendment")) -> "批准并记住此命令规则"
-                        decision is JSONObject && (decision.has("applyNetworkPolicyAmendment") || decision.has("network_policy_amendment")) -> "应用网络规则"
-                        else -> "当前版本不支持此审批选项"
-                    } }
-                    val supported=decision=="accept" || decision=="approved" || decision=="acceptForSession" || decision=="approved_for_session" ||
-                        decision is JSONObject && approvalRuleDescription(decision)!=null
-                    val detail=when {
-                        decision=="acceptForSession" || decision=="approved_for_session" -> "当前会话"
-                        decision is JSONObject -> approvalRuleDescription(decision) ?: "请在服务器上的 Codex 客户端核对该规则"
-                        else -> ""
+                val cwd = params.text("cwd")
+                if (cwd.isNotEmpty()) ApprovalPreview(cwd, "工作目录", NativeTypography.caption12,
+                    reviewLabel = "查看完整路径", onReview = { details = it })
+                for (name in listOf("permissions", "additionalPermissions", "networkApprovalContext", "changes", "fileChanges")) {
+                    val detail = params.opt(name) ?: continue
+                    if (detail == JSONObject.NULL) continue
+                    val label = when (name) {
+                        "changes", "fileChanges" -> "文件更改"
+                        "networkApprovalContext" -> "网络访问"
+                        else -> "请求的权限"
                     }
-                    ApprovalAction(label,detail,enabled&&supported) { respond(decision) }
+                    val value = remember(request, name) { approvalRequestDetails(name, detail) }
+                    Column {
+                        Text(label, color = ContentInk, style = NativeTypography.caption12Medium)
+                        ApprovalPreview(value, label, NativeTypography.caption12, maxLines = 2,
+                            reviewLabel = "查看全部${label}", onReview = { details = it })
+                    }
+                }
+                val grantRoot = params.text("grantRoot")
+                if (grantRoot.isNotBlank()) ApprovalPreview("写入范围：$grantRoot", "写入范围", NativeTypography.caption12,
+                    reviewLabel = "查看完整路径", onReview = { details = it })
+
+                if (permissions) {
+                    HorizontalDivider(color = ContentBorder)
+                    ApprovalAction("始终批准", "当前会话", enabled) { permissionReply(true, "session") }
+                } else {
+                    for (decision in decisions) {
+                        if (decision in listOf("accept", "approved", "cancel", "abort") || isDeclineDecision(decision)) continue
+                        val rule = (decision as? JSONObject)?.let { value ->
+                            remember(request, decision) { approvalRuleDescription(value) }
+                        }
+                        val session = decision == "acceptForSession" || decision == "approved_for_session"
+                        val label = when {
+                            session -> "始终批准"
+                            decision is JSONObject && (decision.has("acceptWithExecpolicyAmendment") || decision.has("approved_execpolicy_amendment")) ->
+                                "批准并记住此命令规则"
+                            decision is JSONObject && (decision.has("applyNetworkPolicyAmendment") || decision.has("network_policy_amendment")) ->
+                                "应用网络规则"
+                            else -> "当前版本不支持此审批选项"
+                        }
+                        val note = when {
+                            session -> "当前会话"
+                            rule != null -> rule
+                            else -> "请在服务器上的 Codex 客户端核对该选项"
+                        }
+                        Column {
+                            HorizontalDivider(color = ContentBorder)
+                            ApprovalAction(label, note, enabled && (session || rule != null)) { respond(decision) }
+                            if (rule != null) ApprovalReviewLink("查看完整规则") {
+                                details = ApprovalDetails("完整规则", rule)
+                            }
+                        }
+                    }
+                }
+                if (permissions || deny != null) {
+                    Column {
+                        HorizontalDivider(color = ContentBorder)
+                        FeedbackRow(enabled, feedback, { feedback = it }, { decline() }, { decline() }, "告诉 Codex 应该如何处理")
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+        }
+        if (permissions || accept != null || cancel != null) {
+            HorizontalDivider(color = ContentBorder)
+            Row(Modifier.fillMaxWidth().testTag("approval-actions").padding(top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End) {
+                if (cancel != null) Box(Modifier.weight(2f), contentAlignment = Alignment.CenterStart) {
+                    TextButton(enabled = enabled, onClick = { respond(cancel) }) {
+                        Text("取消本次请求", color = if (enabled) ContentInk else ContentMuted, style = NativeTypography.body14Medium)
+                    }
+                }
+                if (permissions || accept != null) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                    PillButton("批准", enabled) {
+                        if (permissions) permissionReply(true, "turn") else accept?.let { respond(it) }
+                    }
                 }
             }
-            if(canDecline) {
-                HorizontalDivider(color=ContentBorder)
-                FeedbackRow(enabled,feedback,{feedback=it},{decline()},{decline()},"告诉 Codex 应该如何处理")
+        }
+    }
+    details?.let { ApprovalDetailsDialog(it, onClose = { details = null }) }
+}
+
+private fun isDeclineDecision(value: Any): Boolean =
+    value == "decline" || value == "denied" || (value is JSONObject && value.has("denied"))
+
+@Composable
+private fun ApprovalPreview(
+    value: String, title: String, style: TextStyle, reviewLabel: String, maxLines: Int = 3,
+    code: Boolean = false, onReview: (ApprovalDetails) -> Unit,
+) {
+    var clipped by remember(value) { mutableStateOf(false) }
+    val preview = if (code) Modifier.fillMaxWidth().testTag("approval-command-text").clip(RoundedCornerShape(8.dp))
+        .background(ContentField).padding(12.dp) else Modifier.fillMaxWidth()
+    Column {
+        Text(value, preview, color = if (code) ContentInk else ContentMuted, style = style, maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis, onTextLayout = { clipped = it.hasVisualOverflow })
+        if (clipped) ApprovalReviewLink(reviewLabel) { onReview(ApprovalDetails(title, value, code)) }
+    }
+}
+
+@Composable
+private fun ApprovalReviewLink(label: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick) {
+        Text(label, color = ContentInk, style = NativeTypography.body14Medium)
+    }
+}
+
+@Composable
+private fun ApprovalDetailsDialog(details: ApprovalDetails, onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose) {
+        ContentCard(Modifier.heightIn(max = (LocalConfiguration.current.screenHeightDp * .8f).dp)) {
+            Text(details.title, color = ContentInk, style = NativeTypography.body16Medium)
+            Spacer(Modifier.height(8.dp))
+            Column(Modifier.weight(1f, fill = false).fillMaxWidth().testTag("approval-details-scroll")
+                .verticalScroll(rememberScrollState())) {
+                SelectionContainer {
+                    Text(details.text, color = ContentInk,
+                        style = if (details.code) NativeTypography.code13 else NativeTypography.body14)
+                }
             }
-            if(canCancel) Row(Modifier.fillMaxWidth().padding(top=6.dp),horizontalArrangement=Arrangement.End) {
-                Text("取消本次请求",Modifier.clickable(enabled=enabled){respond(if(legacy) "abort" else "cancel")}.padding(vertical=8.dp),
-                    style=NativeTypography.caption12,color=ContentMuted)
+            TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End)) {
+                Text("关闭", color = ContentInk, style = NativeTypography.body14Medium)
             }
         }
     }
@@ -213,12 +318,12 @@ private fun readableFileChanges(detail: Any): String {
 
 @Composable
 private fun ApprovalAction(label: String, detail: String, enabled: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().defaultMinSize(minHeight=40.dp).clickable(enabled=enabled,onClick=onClick).padding(vertical=8.dp),
-        verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-        ContentIcon("check",Modifier.size(16.dp),if(enabled) ContentMuted else ContentMuted.copy(alpha=.4f))
+    Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = 40.dp).clickable(enabled = enabled, onClick = onClick).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ContentIcon("check", Modifier.size(16.dp), if (enabled) ContentMuted else ContentMuted.copy(alpha = .4f))
         Column(Modifier.weight(1f)) {
-            Text(label,style=NativeTypography.body14,color=if(enabled) ContentInk else ContentMuted)
-            if(detail.isNotEmpty()) Text(detail,style=NativeTypography.caption12,color=ContentMuted)
+            Text(label, style = NativeTypography.body14, color = if (enabled) ContentInk else ContentMuted)
+            Text(detail, style = NativeTypography.caption12, color = ContentMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }

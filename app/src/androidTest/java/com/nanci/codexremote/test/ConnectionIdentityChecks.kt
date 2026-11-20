@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import com.nanci.codexremote.connection.ConnectionStore
 import com.nanci.codexremote.connection.ModelPreferences
 import com.nanci.codexremote.connection.ModelSelection
+import com.nanci.codexremote.core.ComposerSpeed
 import com.nanci.codexremote.core.ConnectionProfile
 import com.nanci.codexremote.core.SshCredential
 import org.json.JSONArray
@@ -97,19 +98,32 @@ object ConnectionIdentityChecks {
                         val saved = store.save(profile, firstSecret)
                         var models = ModelPreferences(isolated)
                         models.save(saved, ModelSelection("old-model", "low"))
+                        check(modelPrefs.edit().putBoolean("terra-xhigh-upgrade-v1", true).commit())
                         models.migrate(listOf(saved))
-                        check(models.read(saved) == ModelSelection() && models.initialChoicePending(saved))
+                        val expected = ModelSelection("gpt-6.2-sol", "low", ComposerSpeed.ULTRAFAST)
+                        check(models.read(saved) == expected && models.initialChoicePending(saved))
                         // Read-only restoration and a failed reconnect cannot consume a pending choice.
-                        repeat(2) { check(models.read(saved) == ModelSelection()) }
+                        repeat(2) { check(models.read(saved) == expected) }
                         check(runCatching { store.loadCredential(saved.copy(credentialRevision = "stale")) }.isFailure)
                         models = ModelPreferences(isolated)
                         models.migrate(store.list())
-                        check(models.initialChoicePending(saved) && models.read(saved) == ModelSelection())
+                        check(models.initialChoicePending(saved) && models.read(saved) == expected)
                         models.initialChoiceUsed(saved)
                         check(!ModelPreferences(isolated).initialChoicePending(saved))
-                        models.save(saved, ModelSelection("user-model", "high"))
+                        val custom = ModelSelection("gpt-6.2-sol", "high", ComposerSpeed.FAST)
+                        models.save(saved, custom)
                         models.migrate(store.list())
-                        check(models.read(saved) == ModelSelection("user-model", "high") && !models.initialChoicePending(saved))
+                        check(ModelPreferences(isolated).read(saved) == custom && !models.initialChoicePending(saved))
+                    }
+                    test("a_new_connection_uses_the_initial_default_until_first_turn") {
+                        val store = reset()
+                        ModelPreferences(isolated).migrate(emptyList())
+                        val saved = store.save(profile, firstSecret)
+                        val models = ModelPreferences(isolated)
+                        check(models.read(saved) == ModelSelection() && models.initialChoicePending(saved))
+                        models.initialChoiceUsed(saved)
+                        val reloaded = ModelPreferences(isolated)
+                        check(reloaded.read(saved) == ModelSelection() && !reloaded.initialChoicePending(saved))
                     }
                     test("legacy_workspace_moves_only_to_previously_active_connection") {
                         val store = reset()

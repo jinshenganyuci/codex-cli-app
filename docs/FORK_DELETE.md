@@ -10,7 +10,7 @@
 
 ## 原生与服务端证据
 
-按 agents.me 先复核既有 ChatGPT Android 1.2026.307 定向解包资料：原生 Codex 菜单只有归档，没有对应的永久删除与分叉冲突实现。通用 Android `DeleteConfirmationDialogImpl` 只提供删除确认样式；本次依赖检查与明确列出额外聊天属于客户端补充行为。
+按 [AGENTS.md](../AGENTS.md) 先复核既有 ChatGPT Android 1.2026.307 定向解包资料：原生 Codex 菜单只有归档，没有对应的永久删除与分叉冲突实现。通用 Android `DeleteConfirmationDialogImpl` 只提供删除确认样式；本次依赖检查与明确列出额外聊天属于客户端补充行为。
 
 原 APK 证据入口：`docs/APK_REFERENCE.md` 所述旧工作区 `work/delete-composer-20261116/delete-evidence.txt`，以及其中的 `delete-native/itf1.java`、`x3f1.java` 和 `r7x.java`。没有重做全量解包。
 

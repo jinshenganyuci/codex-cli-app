@@ -42,11 +42,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.sp
+import com.nanci.codexremote.core.ComposerSpeed
+import com.nanci.codexremote.ui.content.ImageSource
 import com.nanci.codexremote.ui.theme.NativeTheme
 import com.nanci.codexremote.ui.theme.NativeTypography
 import com.nanci.codexremote.ui.theme.nativeShadow
 
 private fun reasoningLabel(value: String) = when (value.lowercase()) { "none" -> "无"; "minimal" -> "最低"; "low" -> "低"; "medium" -> "中"; "high" -> "高"; "xhigh" -> "极高"; "max" -> "Max"; "ultra" -> "Ultra"; else -> value }
+private fun speedLabel(speed: ComposerSpeed) = when (speed) {
+    ComposerSpeed.STANDARD -> "常速"
+    ComposerSpeed.FAST -> "快速"
+    ComposerSpeed.ULTRAFAST -> "极速"
+}
+private fun speedDescription(speed: ComposerSpeed) = when (speed) {
+    ComposerSpeed.STANDARD -> "默认速度"
+    ComposerSpeed.FAST -> "更快的响应速度"
+    ComposerSpeed.ULTRAFAST -> "最快的响应速度，适合对延迟敏感的任务"
+}
 private fun permissionGlyph(value: ShellPermission) = when (value) { ShellPermission.Default -> "hand"; ShellPermission.AutoReview -> "shield"; ShellPermission.ReadOnly -> "readonly"; ShellPermission.FullAccess -> "warning"; ShellPermission.Custom -> "settings" }
 private fun permissionLabel(value: ShellPermission) = when (value) { ShellPermission.Default -> "默认权限"; ShellPermission.AutoReview -> "自动审核"; ShellPermission.ReadOnly -> "只读"; ShellPermission.FullAccess -> "完整访问权限"; ShellPermission.Custom -> "自定义权限" }
 private fun permissionDescription(value: ShellPermission) = when (value) { ShellPermission.Default -> "在沙盒中运行命令"; ShellPermission.AutoReview -> "自动审核提权请求"; ShellPermission.ReadOnly -> "编辑文件或运行命令需经批准"; ShellPermission.FullAccess -> "电脑完全访问权限（风险较高）"; ShellPermission.Custom -> "使用服务器的自定义配置" }
@@ -85,6 +97,7 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
     )
     val selectedModel = state.models.firstOrNull { it.id == state.modelId }
     val modelLabel = selectedModel?.label ?: state.modelId.ifBlank { "模型" }
+    val hasSpeedChoices = state.speedTiers.size > 1
     // Draft content is retained while reading history; it does not make the editor focused.
     // Attachments/plan keep their content rows even when the outer card is compact.
     val hasAccessories = state.attachments.isNotEmpty() || state.planMode
@@ -147,7 +160,11 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                     Column(Modifier.fillMaxWidth()) {
                         if (state.attachments.isNotEmpty()) {
                             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                state.attachments.forEach { attachment -> AttachmentChip(attachment) { actions.onRemoveAttachment(attachment.id) } }
+                                state.attachments.forEach { attachment ->
+                                    AttachmentChip(attachment, actions.onPreviewAttachment) {
+                                        actions.onRemoveAttachment(attachment.id)
+                                    }
+                                }
                             }
                         }
                         if (state.planMode) {
@@ -203,7 +220,7 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                 model = {
                     Box(if (controlsInteractive) Modifier else Modifier.clearAndSetSemantics { }) {
                         Row(Modifier.heightIn(min = 34.dp).clip(CircleShape).clickable(enabled = controlsInteractive && state.models.isNotEmpty()) {
-                            modelParent = 0; modelMenu = if (selectedModel?.reasoning?.isNotEmpty() == true) 1 else 2
+                            modelParent = 0; modelMenu = if (selectedModel?.reasoning?.isNotEmpty() == true || hasSpeedChoices) 1 else 2
                         }.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             val shortModel = modelLabel.removePrefix("GPT-")
                             val reason = reasoningLabel(state.reasoning)
@@ -213,9 +230,9 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                             when (modelMenu) {
                                 1 -> {
                                     selectedModel?.reasoning.orEmpty().forEach { reason -> MenuRow(reasoningLabel(reason), checked = state.reasoning == reason) { actions.onReasoning(reason); modelMenu = 0 } }
-                                    MenuDivider()
+                                    if (selectedModel?.reasoning?.isNotEmpty() == true) MenuDivider()
                                     MenuRow("模型", subtitle = modelLabel, trailing = true) { modelParent = 1; modelMenu = 2 }
-                                    if (state.supportsFast) MenuRow("速度", subtitle = if (state.fast) "快速" else "常速", trailing = true) { modelParent = 1; modelMenu = 3 }
+                                    if (hasSpeedChoices) MenuRow("速度", subtitle = speedLabel(state.speed), trailing = true) { modelParent = 1; modelMenu = 3 }
                                 }
                                 2 -> {
                                     MenuRow("模型", subtitle = modelLabel, trailing = true) { modelMenu = modelParent; modelParent = 0 }
@@ -223,10 +240,13 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
                                     state.models.forEach { model -> MenuRow(model.label, subtitle = model.description, checked = model.id == state.modelId) { actions.onModel(model.id); modelMenu = 0 } }
                                 }
                                 3 -> {
-                                    MenuRow("速度", subtitle = if (state.fast) "快速" else "常速", trailing = true) { modelMenu = modelParent; modelParent = 0 }
+                                    MenuRow("速度", subtitle = speedLabel(state.speed), trailing = true) { modelMenu = modelParent; modelParent = 0 }
                                     MenuDivider()
-                                    MenuRow("常速", subtitle = "默认速度", checked = !state.fast) { actions.onFast(false); modelMenu = 0 }
-                                    MenuRow("快速", subtitle = "更快的响应速度", checked = state.fast) { actions.onFast(true); modelMenu = 0 }
+                                    state.speedTiers.forEach { speed ->
+                                        MenuRow(speedLabel(speed), subtitle = speedDescription(speed), checked = state.speed == speed) {
+                                            actions.onSpeed(speed); modelMenu = 0
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -269,12 +289,15 @@ fun Composer(state: ComposerState, actions: ComposerActions, modifier: Modifier 
     }
 }
 
-@Composable private fun AttachmentChip(attachment: ShellAttachment, onRemove: () -> Unit) {
+@Composable private fun AttachmentChip(attachment: ShellAttachment, onPreview: (ImageSource) -> Unit, onRemove: () -> Unit) {
+    val content = if (attachment.imagePreview != null) {
+        Modifier.fillMaxSize().clickable(onClickLabel = "查看大图") { onPreview(attachment.imagePreview) }
+    } else Modifier.fillMaxSize()
     Box(Modifier.size(if (attachment.thumbnail != null) 88.dp else 154.dp, if (attachment.thumbnail != null) 126.dp else 74.dp).clip(RoundedCornerShape(14.dp)).background(ShellField)) {
         if (attachment.thumbnail != null) {
-            Image(attachment.thumbnail.asImageBitmap(), contentDescription = attachment.label, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            Image(attachment.thumbnail.asImageBitmap(), contentDescription = attachment.label, contentScale = ContentScale.Crop, modifier = content)
         } else {
-            Row(Modifier.fillMaxSize().padding(start = 12.dp, end = 28.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(content.padding(start = 12.dp, end = 28.dp), verticalAlignment = Alignment.CenterVertically) {
                 ShellGlyph("file", Modifier.size(24.dp), ShellMuted); Spacer(Modifier.width(8.dp))
                 Column { Text(attachment.label, color = ShellInk, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = .2.sp, maxLines = 2, overflow = TextOverflow.Ellipsis); if (attachment.error != null) Text(attachment.error, color = NativeTheme.colors.danger, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1) }
             }

@@ -87,7 +87,7 @@ fun imageFileName(source:ImageSource,detectedExtension:String?=null):String {
         ImageSourceKind.HttpUrl -> runCatching {java.net.URI(source.value).rawPath}.getOrNull().orEmpty()
         else -> ""
     }
-    val rawName=path.substringAfterLast('/')
+    val rawName=source.displayName ?: path.substringAfterLast('/')
     val decoded=if(source.kind==ImageSourceKind.HttpUrl) runCatching {
         java.net.URLDecoder.decode(rawName.replace("+","%2B"),"UTF-8")
     }.getOrDefault(rawName) else rawName

@@ -1,5 +1,6 @@
 package com.nanci.codexremote.ui.content
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -14,6 +15,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,32 +43,51 @@ fun MessageContent(
     onOpenImage: (ImageSource) -> Unit = {},
     onCopyImage: ((ImageSource) -> Unit)? = null,
     imageBaseDirectory: String? = null,
+    compactActivity: Boolean = false,
+    onInspectActivity: () -> Unit = {},
 ) {
     val type = item.messageString("type")
     Column(modifier.fillMaxWidth()) {
         when (type) {
-            "userMessage" -> UserMessage(item,imageLoader,onOpenImage)
+            "userMessage" -> UserMessage(item, imageLoader, onOpenImage, onOpenLink, imageBaseDirectory)
             "agentMessage" -> {
                 val text = item.messageString("text")
                 if (text.isNotBlank()) {
-                    MarkdownContent(text, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
-                        imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity())
-                    IconButton(onClick = { onCopy(text) }, modifier = Modifier.padding(top = 10.dp).size(36.dp)) {
-                        ContentIcon("copy", Modifier.size(21.dp), ContentInk)
+                    if (compactActivity) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            Box(Modifier.weight(1f)) {
+                                MarkdownContent(text, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                                    imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity())
+                            }
+                            ContentIconButton("copy", "复制", { onCopy(text) })
+                        }
+                    } else {
+                        MarkdownContent(text, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                            imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity())
+                        IconButton(onClick = { onCopy(text) }, modifier = Modifier.padding(top = 10.dp).size(36.dp)) {
+                            ContentIcon("copy", Modifier.size(21.dp), ContentInk)
+                        }
                     }
                 }
             }
             "plan" -> PlanPreview(item.messageString("text"), onOpen = onPlanOpen, onCopy = onCopy, onDownload = onDownload,
                 onOpenLink=onOpenLink,imageLoader=imageLoader,onOpenImage=onOpenImage,
                 imageBaseDirectory=imageBaseDirectory,imageKey=item.messageIdentity())
-            "commandExecution" -> CommandItem(item, onCopy)
+            "commandExecution" -> CommandItem(item, onCopy, onInspectActivity)
             "fileChange" -> FileChanges(item, onCopy)
             "reasoning" -> {
-                val text = item.optJSONArray("summary").messageStrings().joinToString("\n\n")
-                    .ifBlank { item.optJSONArray("content").messageStrings().joinToString("\n\n") }
-                if (text.isNotBlank()) ExpandableItem("思考", item.messageString("status")) {
-                    MarkdownContent(text, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
-                        imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity())
+                val summary = item.optJSONArray("summary").messageStrings().joinToString("\n\n")
+                val text = summary.ifBlank { item.optJSONArray("content").messageStrings().joinToString("\n\n") }
+                if (text.isNotBlank()) {
+                    val details: @Composable ColumnScope.() -> Unit = {
+                        MarkdownContent(text, onOpenLink = onOpenLink, imageLoader = imageLoader, onOpenImage = onOpenImage,
+                            imageBaseDirectory = imageBaseDirectory, imageKey = item.messageIdentity())
+                    }
+                    if (compactActivity) {
+                        val title = summary.lineSequence().firstOrNull { it.isNotBlank() }
+                            ?.trim()?.trim('*', '_', '#', ' ')?.take(120).orEmpty().ifBlank { "思考" }
+                        ActivityItem(title, "clock", onInspectActivity, details)
+                    } else ExpandableItem("思考", item.messageString("status"), details)
                 }
             }
             "mcpToolCall", "dynamicToolCall" -> ToolItem(item,onCopy,onOpenLink,imageLoader,onOpenImage,imageBaseDirectory)
@@ -105,7 +128,13 @@ fun MessageContent(
 }
 
 @Composable
-private fun UserMessage(item: JSONObject,imageLoader: ImageLoader?,onOpenImage: (ImageSource) -> Unit) {
+private fun UserMessage(
+    item: JSONObject,
+    imageLoader: ImageLoader?,
+    onOpenImage: (ImageSource) -> Unit,
+    onOpenLink: (String) -> Unit,
+    imageBaseDirectory: String?,
+) {
     val content = item.optJSONArray("content")
     val indexedParts=(0 until (content?.length() ?: 0)).mapNotNull { index ->
         content?.optJSONObject(index)?.let { IndexedValue(index,it) }
@@ -119,13 +148,26 @@ private fun UserMessage(item: JSONObject,imageLoader: ImageLoader?,onOpenImage: 
         groups.forEach { group ->
             val (index,part)=group.first()
             key(item.messageIdentity(),index) {
-                if(group.size>1) UserImageGroup(group,item.messageIdentity(),imageLoader,onOpenImage)
+                if(group.size>1) UserImageGroup(group,item.messageIdentity(),imageLoader,onOpenImage,imageBaseDirectory)
                 else when (part.messageString("type")) {
                     "text" -> UserTextBubble(readableUserText(part.messageString("text")))
-                    "image", "localImage" -> ImageAttachment(part.messageString("url").ifBlank { part.messageString("path") },
+                    "image", "localImage" -> ImageAttachment(userMessageImageLocation(part,imageBaseDirectory),
                         item.messageIdentity()+":user:$index","图片",imageLoader,onOpenImage)
-                    "skill", "mention" -> Surface(color = ContentField, shape = RoundedCornerShape(12.dp)) {
-                        Text(part.messageString("name"), color = ContentMuted, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
+                    "skill", "mention" -> {
+                        val name = part.messageString("name")
+                        val path = userAttachmentPath(part, parts)
+                        val image = path?.takeIf { hasImageFileExtension(it) || hasImageFileExtension(name) }?.let {
+                            ImageSource(ImageSourceKind.RemotePath, it, cacheKey = "${item.messageIdentity()}:attachment:$index:$it", displayName = name)
+                        }
+                        val click = if (path == null) Modifier else Modifier.clickable(
+                            onClickLabel = if (image != null) "全屏查看图像" else "打开附件",
+                        ) {
+                            if (image != null) onOpenImage(image)
+                            else onOpenLink(Uri.Builder().scheme("file").path(path).build().toString())
+                        }
+                        Surface(modifier = click, color = ContentField, shape = RoundedCornerShape(12.dp)) {
+                            Text(name, color = ContentMuted, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
+                        }
                     }
                     else -> Text("附件 · ${part.messageString("type")}", color = ContentMuted, fontSize = 12.sp)
                 }
@@ -134,6 +176,25 @@ private fun UserMessage(item: JSONObject,imageLoader: ImageLoader?,onOpenImage: 
         if(visibleParts.isEmpty()) UserTextBubble(readableUserText(item.messageString("text")))
     }
 }
+
+/** Match the app's uploaded file metadata, leaving app and skill mentions as plain labels. */
+internal fun userAttachmentPath(part: JSONObject, content: List<JSONObject>): String? {
+    if (part.messageString("type") != "mention") return null
+    val path = part.messageString("path").takeIf {
+        it.startsWith('/') && !it.endsWith('/') && it.none { char -> char in "\u0000\r\n" }
+    } ?: return null
+    return path.takeIf {
+        content.any { entry ->
+            entry.messageString("type") == "text" &&
+                UserInputs.isAttachmentMetadata(entry.messageString("text"), listOf(part))
+        }
+    }
+}
+
+private val imageFileExtensions = setOf("svg", "png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "bmp", "avif", "wbmp")
+
+internal fun hasImageFileExtension(path: String): Boolean =
+    path.substringAfterLast('/').substringAfterLast('.', "").lowercase() in imageFileExtensions
 
 /** Only adjacent images in this message share a gallery; original part indices identify previews. */
 internal fun groupUserMessageParts(parts: List<IndexedValue<JSONObject>>): List<List<IndexedValue<JSONObject>>> {
@@ -213,23 +274,72 @@ internal fun userMessageWrapperSmokeChecks(): List<String> = buildList {
 
 
 @Composable
-private fun CommandItem(item: JSONObject, onCopy: (String) -> Unit) {
+private fun CommandItem(item: JSONObject, onCopy: (String) -> Unit, onInspect: () -> Unit) {
     val command = item.messageString("command")
     val status = item.messageString("status")
-    val summary = item.optJSONArray("commandActions")?.let { actions ->
-        actions.optJSONObject(0)?.let { action -> action.messageString("name").ifBlank { action.messageString("path") }.ifBlank { action.messageString("query") } }
-    }.orEmpty().ifBlank { command.lineSequence().firstOrNull().orEmpty() }
-    ExpandableItem(summary.ifBlank { "运行命令" }, status) {
+    val action = item.optJSONArray("commandActions")?.takeIf { it.length() == 1 }?.optJSONObject(0)
+    val path = action?.messageString("path").orEmpty()
+    val name = path.trimEnd('/').substringAfterLast('/')
+    val (title, icon) = when (action?.messageString("type")) {
+        "read" -> action.messageString("name").ifBlank { name }.ifBlank { "读取文件" } to "file"
+        "listFiles" -> name.ifBlank { path.ifBlank { "查看目录" } } to "folder"
+        "search" -> action.messageString("query").ifBlank { name }.ifBlank { "搜索文件" } to "search"
+        else -> "命令执行" to "laptop"
+    }
+    ActivityItem(title, icon, onInspect) {
         Text("命令", color = ContentMuted, fontSize = 12.sp)
         OutputContent(command, onCopy)
         item.messageString("cwd").takeIf { it.isNotBlank() }?.let { Text(it, color = ContentMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace) }
         val output = item.messageString("aggregatedOutput")
         if (output.isNotEmpty()) { Text("输出", color = ContentMuted, fontSize = 12.sp); OutputContent(output, onCopy) }
+        val statusLabel = when (status) {
+            "inProgress", "in_progress", "running" -> "执行中"
+            "declined" -> "已拒绝"
+            "failed" -> "执行失败"
+            "completed", "success", "succeeded" -> "执行完成"
+            else -> null
+        }
+        statusLabel?.let { Text(it, color = ContentMuted, fontSize = 12.sp) }
         val metadata = buildList {
             if (item.has("exitCode") && !item.isNull("exitCode")) add("退出码 ${item.optInt("exitCode")}")
             if (item.has("durationMs") && !item.isNull("durationMs")) add("${"%.1f".format(item.optLong("durationMs") / 1000.0)} 秒")
         }.joinToString(" · ")
         if (metadata.isNotBlank()) Text(metadata, color = ContentMuted, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun ActivityItem(title: String, icon: String, onInspect: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    ActivityDisclosure(title, expanded,
+        onToggle = {
+            onInspect()
+            expanded = !expanded
+        }, icon = icon)
+    if (expanded) Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+}
+
+@Composable
+internal fun ActivityDisclosure(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: String? = null,
+    summary: Boolean = false,
+) {
+    val appearance = if (summary) Modifier.clip(RoundedCornerShape(10.dp)).background(ContentField) else Modifier
+    Row(modifier.fillMaxWidth().then(appearance).clickable(role = Role.Button, onClick = onToggle)
+        .semantics { stateDescription = if (expanded) "已展开" else "已收起" }
+        .defaultMinSize(minHeight = if (summary) 42.dp else 36.dp)
+        .padding(horizontal = if (summary) 12.dp else 0.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (icon != null) ContentIcon(icon, Modifier.size(16.dp))
+        Text(title, Modifier.weight(1f), color = ContentMuted,
+            style = if (summary) NativeTypography.body14Medium else NativeTypography.body14,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        ContentIcon("chevron", Modifier.size(14.dp).rotate(if (expanded) 90f else 0f))
     }
 }
 

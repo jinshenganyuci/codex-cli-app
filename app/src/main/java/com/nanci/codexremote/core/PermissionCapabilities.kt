@@ -13,6 +13,13 @@ object PermissionCapabilities {
     fun available(state: RepositoryState, model: String? = null): List<PermissionPreset> =
         presets.filter { disabledReason(state, it, model) == null }
 
+    /** Mobile's default applies to each new turn, including turns in resumed chats. */
+    internal fun composerPreset(state: RepositoryState, model: String?, choice: PermissionPreset?): PermissionPreset {
+        if (choice != null) return choice
+        return if (state.configRequirements != null && disabledReason(state, PermissionPreset.FULL_ACCESS, model) != null)
+            PermissionPreset.CUSTOM else PermissionPreset.FULL_ACCESS
+    }
+
     fun normalizeReviewer(value: String?): String = when (value) {
         null, "", "null" -> "user"
         "guardian_subagent" -> "auto_review"
@@ -81,24 +88,6 @@ object PermissionCapabilities {
             suffix
         }
         return (0 until required.length()).any { required.opt(it) == slug }
-    }
-
-    /** Never label a mixed policy/reviewer/sandbox combination as a standard preset. */
-    fun current(settings: JSONObject?): PermissionPreset {
-        settings ?: return PermissionPreset.CUSTOM
-        val sandbox = settings.optJSONObject("sandboxPolicy") ?: settings.optJSONObject("sandbox")
-        val mode = sandbox?.optString("type") ?: return PermissionPreset.CUSTOM
-        val policyValue = settings.opt("approvalPolicy")
-        val policy = if (policyValue == null || policyValue == JSONObject.NULL)
-            (if (mode == "dangerFullAccess") "never" else "on-request") else policyValue as? String
-        val reviewer = normalizeReviewer(settings.opt("approvalsReviewer") as? String)
-        return when {
-            mode == "dangerFullAccess" && policy == "never" && reviewer == "user" -> PermissionPreset.FULL_ACCESS
-            mode == "readOnly" && policy == "on-request" && reviewer == "user" -> PermissionPreset.READ_ONLY
-            mode == "workspaceWrite" && policy == "on-request" && reviewer == "user" -> PermissionPreset.DEFAULT
-            mode == "workspaceWrite" && policy == "on-request" && reviewer == "auto_review" -> PermissionPreset.AUTO_REVIEW
-            else -> PermissionPreset.CUSTOM
-        }
     }
 
     fun options(preset: PermissionPreset): TurnOptions {

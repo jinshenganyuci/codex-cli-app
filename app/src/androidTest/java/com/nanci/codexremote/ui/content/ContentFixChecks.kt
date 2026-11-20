@@ -1,6 +1,7 @@
 package com.nanci.codexremote.ui.content
 
 import com.nanci.codexremote.core.approvalDecisionSmokeChecks
+import com.nanci.codexremote.core.UserInputs
 import com.nanci.codexremote.ui.theme.nativeColors
 import androidx.compose.ui.text.font.FontFamily
 
@@ -9,6 +10,15 @@ object ContentFixChecks {
     fun run(): List<String> = buildList {
         addAll(markdownInlineSmokeChecks())
         addAll(approvalDecisionSmokeChecks())
+        val imagePath = "/home/codex/attachments/chart %20#?.SVG"
+        val imageMention = UserInputs.remoteFile("图表.SVG", imagePath)
+        val attachmentContent = UserInputs.prepareForSend(listOf(imageMention))
+        if (userAttachmentPath(imageMention, attachmentContent) != imagePath || !hasImageFileExtension(imagePath))
+            add("uploaded image attachment preserves literal server path")
+        val otherMention = UserInputs.remoteFile("另一份附件", imagePath)
+        if (userAttachmentPath(otherMention, attachmentContent) != null ||
+            userAttachmentPath(imageMention, listOf(imageMention)) != null)
+            add("only explicitly paired attachment metadata opens a server file")
         val patch = "diff --git a/counter.txt b/counter.txt\n--- a/counter.txt\n+++ b/counter.txt\n@@ -1 +1 @@\n---counter\n+++counter\n"
         val inline = parseChangedFilePatch("counter.txt", patch)
         val sheet = parseChangedFiles(patch)?.files?.singleOrNull()

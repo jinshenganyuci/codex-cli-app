@@ -58,7 +58,7 @@ fun MessageImage(
                     onImageSize?.invoke(current.bitmap.width,current.bitmap.height)
                 }
                 val imageSize=if(fillCell) Modifier.fillMaxSize() else Modifier.width(fittedWidth).height(fittedWidth/ratio)
-                Image(current.bitmap,label,imageSize.clip(RoundedCornerShape(28.dp)).clickable { onOpenImage(source) },
+                Image(current.bitmap,label,imageSize.clip(RoundedCornerShape(28.dp)).clickable(onClickLabel = "全屏查看图像") { onOpenImage(source) },
                     contentScale=if(fillCell || ratio!=originalRatio) ContentScale.Crop else ContentScale.Fit)
             }
             else -> Box((if(fillCell) Modifier.fillMaxSize() else Modifier.width(widthLimit).aspectRatio(1f)).clip(RoundedCornerShape(28.dp))
@@ -80,6 +80,22 @@ fun MessageImage(
     }
 }
 
+/** LocalImage uses a server filesystem path, which can be relative to the chat workspace. */
+@Composable
+internal fun userMessageImageLocation(part: JSONObject, baseDirectory: String?): String {
+    val raw = (part.opt("url") as? String).orEmpty().ifBlank { (part.opt("path") as? String).orEmpty() }
+    val local = part.optString("type") == "localImage"
+    return remember(raw, local, baseDirectory) {
+        val base = baseDirectory?.takeIf { it.startsWith('/') && it.none { char -> char in "\u0000\r\n" } }
+        when {
+            !local -> raw
+            raw.any { it in "\u0000\r\n" } -> ""
+            base == null || raw.isBlank() || raw.startsWith('/') || "://" in raw || raw.startsWith("data:", true) -> raw
+            else -> "${base.trimEnd('/')}/$raw"
+        }
+    }
+}
+
 /** Android native MessageImageListContent: 8 dp gaps; 2/4 images use two columns, others three. */
 @Composable
 internal fun UserImageGroup(
@@ -87,6 +103,7 @@ internal fun UserImageGroup(
     messageId: String,
     loader: ImageLoader?,
     onOpenImage: (ImageSource) -> Unit,
+    imageBaseDirectory: String?,
 ) {
     val decodedRatios=remember(messageId,parts.map { it.index }) { mutableStateMapOf<Int,Float>() }
     BoxWithConstraints(Modifier.fillMaxWidth(),contentAlignment=Alignment.TopEnd) {
@@ -114,7 +131,7 @@ internal fun UserImageGroup(
                         val width=if(parts.size==2) twoWidths[columnIndex] else side
                         val height=if(parts.size==2) twoHeight else side
                         key(part.index) {
-                            val raw=(part.value.opt("url") as? String).orEmpty().ifBlank { (part.value.opt("path") as? String).orEmpty() }
+                            val raw=userMessageImageLocation(part.value,imageBaseDirectory)
                             val source=messageImageSource(raw,"$messageId:user:${part.index}")
                             val label="图片 ${rowIndex*columns+columnIndex+1}，共 ${parts.size} 张"
                             if(source!=null) MessageImage(source,label,loader,onOpenImage,Modifier.width(width).height(height),

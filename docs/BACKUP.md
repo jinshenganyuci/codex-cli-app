@@ -5,7 +5,7 @@
 ## 已备份的范围
 
 - Android Kotlin/Compose 源码、Gradle wrapper、固定依赖和构建/发布脚本。
-- 项目专属 `AGENTS.md`、`agents.me` 与验证说明。
+- 项目专属 [AGENTS.md](../AGENTS.md) 与验证说明。
 - 标签 `v0.2.7` 精确对应已经构建验证的 build24 原始 68 个源码文件；清单为 `docs/releases/0.2.7-source-manifest.json`。后续仅补充仓库文档与忽略规则。
 - `v0.2.7` Release 保存已验证的正式 APK、原源码 ZIP、验证说明与 SHA-256 清单。APK 不放进 Git 源码历史。
 

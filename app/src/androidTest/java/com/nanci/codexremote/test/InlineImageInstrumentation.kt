@@ -11,6 +11,8 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Base64
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -28,6 +30,8 @@ import com.nanci.codexremote.ImageViewer
 import com.nanci.codexremote.MainActivity
 import com.nanci.codexremote.connection.ConnectionStore
 import com.nanci.codexremote.core.CodexRepository
+import com.nanci.codexremote.core.UserInputs
+import com.nanci.codexremote.core.jsonArray
 import com.nanci.codexremote.ui.content.*
 import org.json.JSONObject
 import java.io.File
@@ -61,6 +65,7 @@ class InlineImageInstrumentation : Instrumentation() {
     private val seenImages = ConcurrentHashMap<String, String>()
     private val unexpectedSources = ConcurrentHashMap.newKeySet<String>()
     private val openedByClick = AtomicReference<String?>()
+    private val openedFileLink = AtomicReference<String?>()
     private val saveButtonName = AtomicReference<String?>()
 
     override fun onCreate(arguments: Bundle?) {
@@ -122,6 +127,7 @@ class InlineImageInstrumentation : Instrumentation() {
         } catch (failure: Throwable) {
             result.putString("status", "failed")
             result.putString("error_type", failure.javaClass.simpleName)
+            failure.message?.takeIf { it.matches(Regex("[a-z_]{1,80}")) }?.let { result.putString("failure_check", it) }
             // Do not print arbitrary protocol messages or credentials from underlying exceptions.
         } finally {
             result.putString("stage", stage)
@@ -212,16 +218,29 @@ class InlineImageInstrumentation : Instrumentation() {
         val message = JSONObject().put("id", "inline-image-check-$runId").put("type", "agentMessage").put("text",
             "SVG 对数函数图：\n\n![SVG 对数函数图](<$svgPath>)\n\nPNG 对数函数图：\n\n![PNG 对数函数图](<./${pngPath.substringAfterLast('/')}>)\n\n" +
                 "[下载图片](<$pngPath>)\n\n`![代码示例]($root/qa-must-not-read.png)`\n\n```text\n![代码块]($root/qa-must-not-read.svg)\n```")
+        val reportPath = "$root/qa-report%20#?.pdf"
+        val sent = JSONObject().put("id", "sent-image-check-$runId").put("type", "userMessage").put(
+            "content", jsonArray(UserInputs.prepareForSend(listOf(
+                JSONObject().put("type", "localImage").put("path", pngPath.substringAfterLast('/')),
+                UserInputs.remoteImage(svgPath),
+                UserInputs.remoteFile("已发送 SVG 文件", svgPath),
+                UserInputs.remoteFile("普通远程附件", reportPath),
+            ))),
+        )
         activity = startActivitySync(Intent(targetContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
+        val displayedMessage = mutableStateOf(message)
         onMain {
             requireNotNull(activity).setContent {
                 MaterialTheme(colorScheme = lightColorScheme(background = Color(0xFFFAFAFA))) {
                     var opened by remember { mutableStateOf<ImageSource?>(null) }
-                    Column(Modifier.fillMaxSize().background(Color(0xFFFAFAFA)).systemBarsPadding()
-                        .verticalScroll(rememberScrollState()).padding(20.dp)) {
-                        MessageContent(message, imageLoader = loader, onOpenImage = {
-                            opened = it; openedByClick.set(it.value)
-                        }, imageBaseDirectory = root)
+                    val displayed = displayedMessage.value
+                    key(displayed) {
+                        Column(Modifier.fillMaxSize().background(Color(0xFFFAFAFA)).systemBarsPadding()
+                            .verticalScroll(rememberScrollState()).padding(20.dp)) {
+                            MessageContent(displayed, imageLoader = loader, onOpenImage = {
+                                opened = it; openedByClick.set(it.value)
+                            }, onOpenLink = openedFileLink::set, imageBaseDirectory = root)
+                        }
                     }
                     opened?.let { source -> ImageViewer(source, loader, onClose = {
                         opened = null; openedByClick.set(null)
@@ -240,6 +259,16 @@ class InlineImageInstrumentation : Instrumentation() {
         result.putString("chat_screenshot", saveScreenshot(screenshots, "chat.png").absolutePath)
         viewerClickCheck("svg", "SVG 对数函数图", svgPath, screenshots)
         viewerClickCheck("png", "PNG 对数函数图", pngPath, screenshots)
+        onMain { displayedMessage.value = sent }
+        waitForIdleSync()
+        result.putString("sent_chat_screenshot", saveScreenshot(screenshots, "sent-chat.png").absolutePath)
+        viewerClickCheck("sent_gallery_png", "图片 1，共 2 张", pngPath, screenshots, extension = "png", touch = true)
+        viewerClickCheck("sent_mention_svg", "已发送 SVG 文件", svgPath, screenshots, extension = "svg", textLabel = true, touch = true)
+        clickVisibleMedia("普通远程附件", textLabel = true)
+        check(openedByClick.get() == null)
+        val encodedFile = requireNotNull(openedFileLink.get())
+        check(resolveMarkdownImageSource(encodedFile, "report-check", root)?.value == reportPath)
+        result.putBoolean("sent_regular_attachment_preserves_exact_path", true)
         stage = "production_inline_image_ui_verified"
         sendStatus(1, Bundle().apply { putString("stream", "\nINLINE_IMAGE_UI_READY\n") })
         val hold = args.getString("holdSeconds", "0").orEmpty().toLong().coerceIn(0, 60)
@@ -249,33 +278,58 @@ class InlineImageInstrumentation : Instrumentation() {
     }
 
     /** Exercise the actual Compose click route; no direct assignment opens the viewer. */
-    private fun viewerClickCheck(format: String, label: String, path: String, screenshots: File) {
-        stage = "${format}_click_opens_production_viewer"
+    private fun viewerClickCheck(
+        case: String, label: String, path: String, screenshots: File, extension: String = case,
+        textLabel: Boolean = false, touch: Boolean = false,
+    ) {
+        stage = "${case}_click_opens_production_viewer"
         saveButtonName.set(null)
-        clickImageWithScroll(label)
+        if (touch) clickVisibleMedia(label, textLabel) else clickMessageMediaWithScroll(label)
         waitUntil(30_000) {
             openedByClick.get() == path && findUiNode {
                 it.contentDescription?.toString() == "保存图片" && it.isEnabled && it.isVisibleToUser
             } != null
         }
         check(findUiNode { it.text?.toString() == "关闭" && it.isVisibleToUser } != null) { "viewer_close_button_missing" }
-        result.putString("${format}_viewer_screenshot", saveScreenshot(screenshots, "$format-viewer.png").absolutePath)
+        result.putString("${case}_viewer_screenshot", saveScreenshot(screenshots, "$case-viewer.png").absolutePath)
         val saveButton = requireNotNull(findUiNode { it.contentDescription?.toString() == "保存图片" && it.isEnabled })
         check(clickUiNode(saveButton)) { "viewer_save_click_failed" }
         waitUntil(5_000) { saveButtonName.get() != null }
-        check(saveButtonName.get()?.substringAfterLast('.') == format) { "viewer_save_filename_wrong_format" }
-        result.putString("${format}_save_button_filename", saveButtonName.get())
+        check(saveButtonName.get()?.substringAfterLast('.') == extension) { "viewer_save_filename_wrong_format" }
+        result.putString("${case}_save_button_filename", saveButtonName.get())
         val closeButton = requireNotNull(findUiNode { it.text?.toString() == "关闭" && it.isVisibleToUser })
         check(clickUiNode(closeButton)) { "viewer_close_click_failed" }
         waitUntil(5_000) {
             openedByClick.get() == null && findUiNode { it.contentDescription?.toString() == "保存图片" } == null
         }
-        result.putBoolean("${format}_actual_click_viewer_save_close", true)
+        result.putBoolean("${case}_actual_click_viewer_save_close", true)
         // Saving is a fixture callback; this test does not create user Downloads or launch SAF.
-        result.putBoolean("${format}_save_callback_verified_without_writing_downloads", true)
+        result.putBoolean("${case}_save_callback_verified_without_writing_downloads", true)
     }
 
-    private fun clickImageWithScroll(label: String) {
+    private fun clickVisibleMedia(label: String, textLabel: Boolean) {
+        var target: Rect? = null
+        waitUntil(10_000) {
+            val node = findUiNode {
+                val value = if (textLabel) it.text else it.contentDescription
+                it.isVisibleToUser && value?.toString()?.split('\n')?.contains(label) == true
+            }
+            target = node?.let { Rect().also(it::getBoundsInScreen) }?.takeUnless { it.isEmpty }
+            target != null
+        }
+        val bounds = requireNotNull(target)
+        val down = SystemClock.uptimeMillis()
+        for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+            val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action,
+                bounds.exactCenterX(), bounds.exactCenterY(), 0)
+            try {
+                event.source = InputDevice.SOURCE_TOUCHSCREEN
+                check(uiAutomation.injectInputEvent(event, true))
+            } finally { event.recycle() }
+        }
+    }
+
+    private fun clickMessageMediaWithScroll(label: String) {
         repeat(12) {
             waitForIdleSync()
             val image = findUiNode { it.contentDescription?.toString() == label && it.isVisibleToUser }

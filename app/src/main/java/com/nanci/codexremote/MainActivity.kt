@@ -157,8 +157,7 @@ private fun RemoteApp(vm:RemoteViewModel, colorMode:AppColorMode, onColorModeCha
     val openLink:(String)->Unit={ link ->
         val source=resolveMarkdownImageSource(link,"link:${System.identityHashCode(link)}",state.selectedThread?.cwd ?: vm.workspace)
         val imagePath=source?.let { if(it.kind==ImageSourceKind.HttpUrl) Uri.parse(it.value).path.orEmpty() else it.value }.orEmpty()
-        val isImage=source?.kind==ImageSourceKind.DataUri || imagePath.substringAfterLast('.',"").lowercase() in
-            setOf("svg","png","jpg","jpeg","webp","gif","heic","heif","bmp","avif","wbmp")
+        val isImage=source?.kind==ImageSourceKind.DataUri || hasImageFileExtension(imagePath)
         if(source!=null && isImage)openImage(source)
         else if(source?.kind==ImageSourceKind.RemotePath)vm.files.open(source.value)
         else runCatching { val uri=Uri.parse(link); require(uri.scheme in listOf("https","http","mailto")); context.startActivity(Intent(Intent.ACTION_VIEW,uri)) }
@@ -260,13 +259,13 @@ private fun RemoteApp(vm:RemoteViewModel, colorMode:AppColorMode, onColorModeCha
         editorEnabled=!state.sending&&vm.editorDraftReady,
         submitting=state.sending||vm.creating,running=state.activeTurnId!=null,planMode=vm.planMode,
         permission=vm.permission, permissions=vm.availablePermissions(), models=availableModels, modelId=vm.model,reasoning=vm.effort,
-        attachments=vm.attachments.map { ShellAttachment(it.id,it.label,it.thumbnail,it.loading,it.error) },
+        attachments=vm.attachments.map { ShellAttachment(it.id,it.label,it.thumbnail,it.loading,it.error,it.imagePreview) },
         focusRequest=vm.focusRequest,allowCamera=state.connected&&!vm.creating&&!state.loadingThread,allowFiles=state.connected&&!vm.creating&&!state.loadingThread,allowPhotos=state.connected&&!vm.creating&&!state.loadingThread,
-        supportsFast=state.models.firstOrNull {it.model==vm.model}?.raw?.optJSONArray("additionalSpeedTiers")?.let { a->(0 until a.length()).any {a.optString(it)=="fast"} }==true,fast=vm.fast)
+        speedTiers=vm.speedTiers,speed=vm.speed)
     val composerActions=ComposerActions(onTextChange=vm::changeDraft,onSend={latestRequest++;keyboard?.hide();vm.send()},
         onStop={vm.observe(vm.repo.interrupt())},onPlanMode={vm.planMode=it},onPermission={ if(it==ShellPermission.FullAccess)fullAccess=true else vm.selectPermission(it) },
         onModel=vm::selectModel,onReasoning=vm::selectEffort,
-        onAttachment=attach,onRemoveAttachment=vm::removeAttachment,onFast={vm.fast=it},
+        onAttachment=attach,onRemoveAttachment=vm::removeAttachment,onSpeed=vm::selectSpeed,onPreviewAttachment=openImage,
         onFocusRequestHandled={request->if(vm.focusRequest==request)vm.focusRequest=0},
         onFocus={ if(vm.home&&state.connected)vm.newChat(true) })
 

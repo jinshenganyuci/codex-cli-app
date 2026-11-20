@@ -1,6 +1,8 @@
 package com.nanci.codexremote.ui.shell
 
 import android.graphics.Bitmap
+import com.nanci.codexremote.core.ComposerSpeed
+import com.nanci.codexremote.ui.content.ImageSource
 
 data class ShellThread(
     val id: String,
@@ -100,6 +102,7 @@ data class ShellAttachment(
     val thumbnail: Bitmap? = null,
     val loading: Boolean = false,
     val error: String? = null,
+    val imagePreview: ImageSource? = null,
 )
 
 data class ComposerState(
@@ -119,8 +122,8 @@ data class ComposerState(
     val allowCamera: Boolean = true,
     val allowPhotos: Boolean = true,
     val allowFiles: Boolean = true,
-    val supportsFast: Boolean = false,
-    val fast: Boolean = false,
+    val speedTiers: List<ComposerSpeed> = listOf(ComposerSpeed.STANDARD),
+    val speed: ComposerSpeed = ComposerSpeed.STANDARD,
     // Keep a live Home draft editable while chat creation still blocks sending.
     val editorEnabled: Boolean = enabled && !submitting,
 )
@@ -149,7 +152,8 @@ data class ComposerActions(
     val onReasoning: (String) -> Unit = {},
     val onAttachment: (AttachmentAction) -> Unit = {},
     val onRemoveAttachment: (String) -> Unit = {},
-    val onFast: (Boolean) -> Unit = {},
+    val onSpeed: (ComposerSpeed) -> Unit = {},
     val onFocus: () -> Unit = {},
     val onFocusRequestHandled: (Int) -> Unit = {},
+    val onPreviewAttachment: (ImageSource) -> Unit = {},
 )
